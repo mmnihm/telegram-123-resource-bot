@@ -30,13 +30,15 @@ const WELCOME_TEXT = `👋 欢迎使用 {bot}
 直接发送 6 位取件码，即可一次获取整批文件。
 
 💡 无需输入命令，按下面按钮即可开始使用。`;
-const UPLOAD_HINT_TEXT = `📤 开始上传资源
+const UPLOAD_HINT_TEXT = `📤 发送资源即可
 
-请连续发送本批次的所有文件。
-📦 文件会自动归入同一批次
+无需点击任何按钮，直接连续发送文件即可。
+📦 连续发送的文件会自动归入同一批次
 🔑 整批只生成一个取件码
 
-全部发送完成后，点击「✅ 完成上传」即可。`;
+停止发送约 3 秒后，机器人会自动完成入库并返回取件码。
+
+💡 也可以点击「📤 上传资源」查看说明。`;
 const BATCH_PROMPT_TEXT = `📦 当前批次上传中
 
 🔑 取件码　{code}
@@ -89,6 +91,8 @@ const batchPromptMessages = new Map();
 const activeBatchCodes = new Map();
 const relayBindWait = new Set();
 const batchQueues = new Map();
+const batchAutoFinishTimers = new Map();
+const BATCH_AUTO_FINISH_MS = 3000;
 
 function enqueueBatch(key, task) {
   const previous = batchQueues.get(key) || Promise.resolve();
@@ -969,6 +973,36 @@ bot.on("message", async msg => {
             }
           }
         }
+
+        // 用户直接连续发送文件时，不需要点击「上传资源」。
+        // 每收到一个文件都会刷新自动完成计时；停止发送约 3 秒后自动完成整批。
+        if (batchAutoFinishTimers.has(key)) {
+          clearTimeout(batchAutoFinishTimers.get(key));
+        }
+        const timer = setTimeout(async () => {
+          batchAutoFinishTimers.delete(key);
+          try {
+            const latest = pendingUploads.get(key) || [];
+            if (!latest.length) return;
+            const batch = await finalizePendingUploads({ chat: msg.chat, from: msg.from });
+            await bot.sendMessage(
+              msg.chat.id,
+              fillText(await getBotText("pickup_code"), {
+                count: batch.items.length,
+                code: batch.code,
+                bot: BOT_NAME
+              })
+            );
+          } catch (e) {
+            console.error("AUTO FINISH ERROR:", e);
+            await bot.sendMessage(
+              msg.chat.id,
+              "❌ 自动生成取件码失败，请稍后重试。\\n\\n💡 " +
+              (e?.message || "未知错误").slice(0, 180)
+            );
+          }
+        }, BATCH_AUTO_FINISH_MS);
+        batchAutoFinishTimers.set(key, timer);
 
         // 这里只收集，不逐个转发、不逐个入库、不逐个上传。
       }).catch(async e => {
