@@ -23,3 +23,14 @@ alter table public.resources drop constraint if exists resources_code_key;
 
 
 alter table public.resources add column if not exists sort_order integer not null default 0;
+
+
+-- 机器人运行配置：保存中转群/频道等设置，无需写入 Render 环境变量。
+create table if not exists public.bot_settings (
+  key text primary key,
+  value text not null default '',
+  updated_at timestamptz not null default now()
+);
+
+alter table public.bot_settings disable row level security;
+grant all privileges on table public.bot_settings to service_role;
