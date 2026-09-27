@@ -46,7 +46,6 @@ function isAdmin(msg) {
 function menu(isAdminUser = false) {
   const rows = [
     [{ text: "📤 上传资源" }],
-    [{ text: "✅ 完成上传" }],
     [{ text: "📖 使用说明" }]
   ];
   if (isAdminUser) rows.push([{ text: "🛠 管理中心" }]);
@@ -172,6 +171,26 @@ async function uploadPendingResource(msg) {
   const fileUrl = await bot.getFileLink(info.fileId);
   await uploadToDav(fileUrl, cloudPath, info.size);
   return { ...info, fileName: name, cloudPath };
+}
+
+async function saveResourceImmediately(msg, item) {
+  const c = await uniqueCode();
+  const row = {
+    code: c,
+    sort_order: 1,
+    file_name: item.fileName,
+    cloud_path: item.cloudPath,
+    file_size: item.size || 0,
+    uploader_id: msg.from?.id || null
+  };
+
+  const { data, error } = await db.from("resources").insert(row).select("*").single();
+  if (error) {
+    try { await deleteFromDav(item.cloudPath); } catch (_) {}
+    throw error;
+  }
+
+  return data || row;
 }
 
 async function finalizePendingUploads(msg) {
@@ -400,10 +419,10 @@ bot.onText(/^\/start$/, async msg => {
   await bot.sendMessage(msg.chat.id,
     "👋 欢迎使用 " + BOT_NAME + "\n\n" +
     "📤 上传资源\n" +
-    "可连续发送多个文件，全部发送完成后点击「✅ 完成上传」。\n\n" +
+    "直接发送文件，上传完成后立即自动生成取件码。\n\n" +
     "🔑 获取资源\n" +
-    "一个取件码对应一整批文件，发送取件码即可全部取回。\n\n" +
-    "💡 无需输入命令，发送文件或取件码即可。",
+    "每个文件对应一个取件码，发送取件码即可取回。\n\n" +
+    "💡 无需输入命令，直接发送文件或取件码即可。",
     menu(isAdmin(msg))
   );
 });
@@ -488,9 +507,9 @@ bot.on("message", async msg => {
       return bot.sendMessage(msg.chat.id,
         "📖 使用说明\n\n" +
         "📤 存入资源\n" +
-        "连续发送多个文件，全部发送完成后点击「✅ 完成上传」。\n\n" +
+        "直接发送文件，上传完成后立即自动生成取件码。\n\n" +
         "🔑 获取资源\n" +
-        "一个取件码对应整批文件，发送取件码即可全部取回。\n\n" +
+        "每个文件对应一个取件码，发送取件码即可取回。\n\n" +
         "💡 全程无需输入命令，直接发送即可。"
       );
     }
@@ -501,21 +520,10 @@ bot.on("message", async msg => {
     }
 
     if (msg.text === "📤 上传资源") {
-      return bot.sendMessage(msg.chat.id, "📤 请连续发送文件\n\n机器人会逐个保存。\n全部发送完成后，点击「✅ 完成上传」生成一个取件码。");
-    }
-
-    if (msg.text === "✅ 完成上传") {
-      const pending = getPending(pendingKey(msg));
-      if (!pending.length) return bot.sendMessage(msg.chat.id, "📭 当前没有待完成的上传。\n\n请先发送文件。");
-      await bot.sendMessage(msg.chat.id, "⏳ 正在生成批次取件码…\n\n共 " + pending.length + " 个文件，请稍候。");
-      const batch = await finalizePendingUploads(msg);
-      return bot.sendMessage(msg.chat.id,
-        "✅ 批量上传完成\n\n" +
-        "📦 文件数量　" + batch.items.length + " 个\n" +
-        "🔑 取件码　　" + batch.code + "\n\n" +
-        "这一批文件共用这一个取件码。\n" +
-        "以后发送该取件码，即可依次取回全部文件。\n" +
-        (BOT_USERNAME ? "📲 机器人：@" + BOT_USERNAME : "")
+      return bot.sendMessage(
+        msg.chat.id,
+        "📤 直接发送文件即可。\n\n" +
+        "文件上传完成后会立即生成取件码，无需点击「完成上传」。"
       );
     }
 
@@ -528,14 +536,14 @@ bot.on("message", async msg => {
       }
       await bot.sendMessage(msg.chat.id, "⏳ 正在保存文件…\n\n📄 " + info.fileName + "\n请稍候。");
       const item = await uploadPendingResource(msg);
-      const list = getPending(pendingKey(msg));
-      list.push(item);
-      return bot.sendMessage(msg.chat.id,
-        "📥 文件已加入本批次\n\n" +
-        "📄 " + item.fileName + "\n" +
-        "📦 当前已上传　" + list.length + " 个文件\n\n" +
-        "可以继续发送文件。\n" +
-        "全部发送完成后，点击「✅ 完成上传」。"
+      const resource = await saveResourceImmediately(msg, item);
+      return bot.sendMessage(
+        msg.chat.id,
+        "✅ 资源上传完成\n\n" +
+        "📄 " + resource.file_name + "\n" +
+        "🔑 取件码　" + resource.code + "\n\n" +
+        "发送这个取件码即可获取资源。\n" +
+        "继续发送其他文件，每个文件都会自动生成新的取件码。"
       );
     }
 
