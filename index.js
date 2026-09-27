@@ -942,12 +942,7 @@ bot.on("message", async msg => {
         if (!batchPromptMessages.has(key)) {
           const promptMsg = await bot.sendMessage(
             msg.chat.id,
-            promptText,
-            {
-              reply_markup: {
-                inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
-              }
-            }
+            promptText
           );
           batchPromptMessages.set(key, promptMsg.message_id);
         } else {
@@ -955,10 +950,7 @@ bot.on("message", async msg => {
           try {
             await bot.editMessageText(promptText, {
               chat_id: msg.chat.id,
-              message_id: promptMessageId,
-              reply_markup: {
-                inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
-              }
+              message_id: promptMessageId
             });
           } catch (e) {
             // Telegram 在文字没有变化时会返回 MESSAGE_NOT_MODIFIED，忽略即可。
