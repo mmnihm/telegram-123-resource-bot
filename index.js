@@ -224,7 +224,7 @@ async function createBatchCode(msg) {
   return c;
 }
 
-async function createRelayResource(msg, codeValue, relayMessageId) {
+async function createRelayResource(msg, codeValue, relayMessageId, sortOrder) {
   const info = await getFileInfo(msg);
   if (!info) return null;
   const name = safeName(info.fileName);
@@ -233,46 +233,92 @@ async function createRelayResource(msg, codeValue, relayMessageId) {
   const random = Math.random().toString(36).slice(2, 8);
   const cloudPath = root + "/pending/" + stamp + "_" + random + "_" + name;
 
-  const { data, error } = await db.from("resources").insert({
+  // 这里只收集批次数据，不写入 resources。
+  // 用户点击「完成上传」后，才会一次性批量入库。
+  return {
+    ...info,
+    fileName: name,
+    cloudPath,
+    relayMessageId,
     code: codeValue,
-    sort_order: Date.now(),
-    file_name: name,
-    cloud_path: cloudPath,
-    file_size: info.size || 0,
-    uploader_id: msg.from?.id || null,
-    status: "uploading"
-  }).select("*").single();
-  if (error) throw error;
-
-  const item = { ...info, fileName: name, cloudPath, relayMessageId, resourceId: data.id, code: codeValue };
-  return item;
+    sortOrder: sortOrder
+  };
 }
 
-async function uploadRelayResource(item) {
+async function batchInsertResources(msg, items) {
+  const rows = items.map(item => ({
+    code: item.code,
+    sort_order: item.sortOrder,
+    file_name: item.fileName,
+    cloud_path: item.cloudPath,
+    file_size: item.size || 0,
+    uploader_id: msg.from?.id || null,
+    status: "uploading"
+  }));
+
+  const { data, error } = await db
+    .from("resources")
+    .insert(rows)
+    .select("*");
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function uploadRelayResource(item, resourceId) {
   try {
     const fileUrl = await bot.getFileLink(item.fileId);
     await uploadToDav(fileUrl, item.cloudPath, item.size);
-    await db.from("resources").update({ status: "active" }).eq("id", item.resourceId);
-    return true;
+    return { id: resourceId, ok: true };
   } catch (e) {
     console.error("RELAY UPLOAD ERROR:", e);
     try { await deleteFromDav(item.cloudPath); } catch (_) {}
-    await db.from("resources").update({ status: "failed" }).eq("id", item.resourceId);
-    return false;
+    return { id: resourceId, ok: false };
   }
 }
 
 async function finalizePendingUploads(msg) {
   const key = pendingKey(msg);
-  const items = pendingUploads.get(key) || [];
-  if (!items.length) return null;
-  const codeValue = items[0].code;
-  const { data, error } = await db.from("resources")
-    .select("*").eq("code", codeValue).order("sort_order", { ascending: true }).order("id", { ascending: true });
-  if (error) throw error;
+  const pendingItems = pendingUploads.get(key) || [];
+  if (!pendingItems.length) return null;
+
+  const codeValue = pendingItems[0].code;
+
+  // 到这里才一次性写入整个批次，绝不逐文件 insert。
+  const inserted = await batchInsertResources(msg, pendingItems);
+
+  // 入库后再统一进入后台上传队列。
+  const uploadJobs = inserted.map((resource, index) =>
+    uploadRelayResource(pendingItems[index], resource.id)
+  );
+
+  Promise.allSettled(uploadJobs).then(async results => {
+    const activeIds = [];
+    const failedIds = [];
+
+    results.forEach(result => {
+      if (result.status === "fulfilled" && result.value.ok) {
+        activeIds.push(result.value.id);
+      } else if (result.status === "fulfilled") {
+        failedIds.push(result.value.id);
+      }
+    });
+
+    if (activeIds.length) {
+      await db.from("resources").update({ status: "active" }).in("id", activeIds);
+    }
+    if (failedIds.length) {
+      await db.from("resources").update({ status: "failed" }).in("id", failedIds);
+    }
+  }).catch(err => console.error("BATCH UPLOAD ERROR:", err));
+
   clearPending(key);
   batchPromptMessages.delete(key);
-  return { code: codeValue, items: data || [] };
+
+  return {
+    code: codeValue,
+    items: inserted
+  };
 }
 
 async function findResources(c) {
@@ -440,20 +486,16 @@ bot.on("callback_query", async query => {
     }
 
     const batch = await finalizePendingUploads({ chat: msg.chat, from: query.from });
-    const active = batch.items.filter(x => x.status === "active").length;
-    const uploading = batch.items.filter(x => x.status === "uploading").length;
-    const failed = batch.items.filter(x => x.status === "failed").length;
+    const count = batch.items.length;
 
-    await bot.answerCallbackQuery(query.id, { text: "批次已提交" });
+    await bot.answerCallbackQuery(query.id, { text: "整批已入库，后台上传中" });
     return bot.editMessageText(
-      (uploading || failed ? "⏳ 批次已提交，后台继续处理" : "✅ 批次上传完成") + "\n\n" +
-      "📦 文件数量　" + batch.items.length + " 个\n" +
-      "🟢 已入库　　" + active + " 个\n" +
-      (uploading ? "⏳ 上传中　　" + uploading + " 个\n" : "") +
-      (failed ? "🔴 失败　　　" + failed + " 个\n" : "") +
+      "📦 批量入库完成\n\n" +
+      "📦 文件数量　" + count + " 个\n" +
+      "⏳ 正在上传　后台处理\n" +
       "🔑 取件码　　" + batch.code + "\n\n" +
-      "发送取件码即可取回已完成入库的文件。\n" +
-      "其余文件上传完成后会自动加入这个取件码。",
+      "这一批文件已经使用同一个取件码。\n" +
+      "123 云盘上传完成后即可正常取件。",
       {
         chat_id: msg.chat.id,
         message_id: msg.message_id
@@ -711,7 +753,7 @@ bot.on("message", async msg => {
       }
 
       const copied = await bot.copyMessage(relayChatId, msg.chat.id, msg.message_id);
-      const item = await createRelayResource(msg, batchCode, copied.message_id);
+      const item = await createRelayResource(msg, batchCode, copied.message_id, list.length + 1);
       list.push(item);
 
       if (!batchPromptMessages.has(key)) {
@@ -730,8 +772,8 @@ bot.on("message", async msg => {
         batchPromptMessages.set(key, promptMsg.message_id);
       }
 
-      // 后台上传，不再阻塞用户继续发送文件。
-      uploadRelayResource(item).catch(err => console.error("BACKGROUND RELAY ERROR:", err));
+      // 这里只收集文件，不逐个入库、不逐个上传。
+      // 点击「✅ 完成上传」后，整个批次一次性写入 resources，再统一进入后台上传。
       return;
     }
 
