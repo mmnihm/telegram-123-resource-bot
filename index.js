@@ -237,7 +237,7 @@ async function createBatchCode(msg) {
   return c;
 }
 
-async function createRelayResource(msg, codeValue, relayMessageId, sortOrder) {
+async function createRelayResource(msg, codeValue, sortOrder) {
   const info = await getFileInfo(msg);
   if (!info) return null;
   const name = safeName(info.fileName);
@@ -246,16 +246,50 @@ async function createRelayResource(msg, codeValue, relayMessageId, sortOrder) {
   const random = Math.random().toString(36).slice(2, 8);
   const cloudPath = root + "/pending/" + stamp + "_" + random + "_" + name;
 
-  // 这里只收集批次数据，不写入 resources。
-  // 用户点击「完成上传」后，才会一次性批量入库。
   return {
     ...info,
     fileName: name,
     cloudPath,
-    relayMessageId,
+    sourceMessageId: msg.message_id,
     code: codeValue,
-    sortOrder: sortOrder
+    sortOrder
   };
+}
+
+async function copyBatchToRelay(fromChatId, relayChatId, messageIds) {
+  if (!messageIds.length) return [];
+
+  const copied = [];
+  // Telegram copyMessages 单次最多 100 条；超过 100 条自动分批。
+  for (let i = 0; i < messageIds.length; i += 100) {
+    const ids = messageIds.slice(i, i + 100);
+    const response = await axios.post(
+      "https://api.telegram.org/bot" + BOT_TOKEN + "/copyMessages",
+      {
+        chat_id: relayChatId,
+        from_chat_id: fromChatId,
+        message_ids: ids
+      },
+      { timeout: 30000 }
+    );
+
+    if (!response.data?.ok) {
+      throw new Error(response.data?.description || "Telegram 批量转存失败");
+    }
+    copied.push(...(response.data.result || []));
+  }
+
+  if (copied.length !== messageIds.length) {
+    throw new Error(
+      "中转仓批量转存数量不一致：收到 " +
+      messageIds.length +
+      " 个文件，实际转存 " +
+      copied.length +
+      " 个"
+    );
+  }
+
+  return copied;
 }
 
 async function batchInsertResources(msg, items) {
@@ -296,8 +330,23 @@ async function finalizePendingUploads(msg) {
   if (!pendingItems.length) return null;
 
   const codeValue = pendingItems[0].code;
+  const relayChatId = await getRelayChatId();
+  if (!relayConfigured(relayChatId)) {
+    throw new Error("中转仓尚未绑定");
+  }
 
-  // 到这里才一次性写入整个批次，绝不逐文件 insert。
+  // 整个批次一次性转入中转仓：3 个就是 1 次，10 个也是 1 次。
+  const copied = await copyBatchToRelay(
+    msg.chat.id,
+    relayChatId,
+    pendingItems.map(item => item.sourceMessageId)
+  );
+
+  pendingItems.forEach((item, index) => {
+    item.relayMessageId = copied[index]?.message_id || null;
+  });
+
+  // 中转完成后，整个批次一次性写入 Supabase。
   const inserted = await batchInsertResources(msg, pendingItems);
 
   // 入库后再统一进入后台上传队列。
@@ -757,30 +806,28 @@ bot.on("message", async msg => {
 
       const key = pendingKey(msg);
 
-      // Telegram 一次发送多个文件时，会快速产生多个独立 update。
-      // 必须按用户/聊天串行处理，否则多个 update 会同时生成取件码、同时操作批次，
-      // 从而出现「❌ 操作失败」或批次数据不完整。
+      // 多个文件先全部收集到当前批次，不再一个文件调用一次 copyMessage。
+      // 点击「完成上传」后，用 Telegram copyMessages 一次性转入中转仓，
+      // 然后再一次性写入 Supabase。
       return enqueueBatch(key, async () => {
         const list = getPending(key);
 
-        // 只在本批次第一次收到文件时生成取件码。
-        // 在用户点击「完成上传」之前，后续所有文件都复用这个码。
         let batchCode = activeBatchCodes.get(key);
         if (!batchCode) {
           batchCode = await createBatchCode(msg);
         }
 
-        const copied = await bot.copyMessage(relayChatId, msg.chat.id, msg.message_id);
-        const item = await createRelayResource(msg, batchCode, copied.message_id, list.length + 1);
-        list.push(item);
+        const item = await createRelayResource(msg, batchCode, list.length + 1);
+        if (item) list.push(item);
 
         if (!batchPromptMessages.has(key)) {
           const promptMsg = await bot.sendMessage(
             msg.chat.id,
             "📦 批次上传中\n\n" +
-            "🔑 取件码　" + batchCode + "\n\n" +
+            "🔑 取件码　" + batchCode + "\n" +
+            "📦 当前文件　" + list.length + " 个\n\n" +
             "继续发送文件，全部发送完成后点击下面按钮。\n" +
-            "⚠️ 在点击「完成上传」之前，所有文件都会使用这个取件码。",
+            "⚡ 完成后会整批转入中转仓、整批入库。",
             {
               reply_markup: {
                 inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
@@ -790,8 +837,7 @@ bot.on("message", async msg => {
           batchPromptMessages.set(key, promptMsg.message_id);
         }
 
-        // 这里只收集文件，不逐个入库、不逐个上传。
-        // 点击「✅ 完成上传」后，整个批次一次性写入 resources，再统一进入后台上传。
+        // 这里只收集，不逐个转发、不逐个入库、不逐个上传。
       }).catch(async e => {
         console.error("BATCH COLLECT ERROR:", e);
         try {
