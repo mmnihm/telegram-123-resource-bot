@@ -346,8 +346,30 @@ bot.on("message", async msg => {
       await sendResource(msg.chat.id, r);
     }
   } catch (e) {
-    console.error("MESSAGE ERROR:", e?.response?.data || e);
-    await bot.sendMessage(msg.chat.id, "❌ 操作失败，请稍后再试。");
+    const status = e?.response?.status;
+    const data = e?.response?.data;
+    console.error("MESSAGE ERROR:", {
+      message: e?.message,
+      status,
+      data: typeof data === "string" ? data.slice(0, 500) : data
+    });
+
+    let reason = "服务暂时异常";
+    if (!davConfigured()) {
+      reason = "123 云盘 WebDAV 尚未配置";
+    } else if (status === 401 || status === 403) {
+      reason = "123 云盘 WebDAV 账号或密码不正确";
+    } else if (status === 404) {
+      reason = "123 云盘中找不到对应文件";
+    } else if (status >= 500) {
+      reason = "123 云盘 WebDAV 暂时无法连接";
+    } else if (e?.message?.includes("Supabase")) {
+      reason = "数据库暂时无法连接";
+    } else if (e?.message) {
+      reason = e.message.slice(0, 120);
+    }
+
+    await bot.sendMessage(msg.chat.id, "❌ 操作失败\\n\\n原因：" + reason + "\\n\\n请稍后重试；如果持续出现，请检查 Render 日志。");
   }
 });
 
