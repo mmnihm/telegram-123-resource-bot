@@ -152,7 +152,6 @@ function isAdmin(msg) {
 
 function menu(isAdminUser = false) {
   const rows = [
-    [{ text: "📤 上传资源" }],
     [{ text: "📖 使用说明" }]
   ];
   if (isAdminUser) rows.push([{ text: "🛠 管理中心" }]);
@@ -862,12 +861,7 @@ bot.on("message", async msg => {
       return bot.sendMessage(msg.chat.id, "⛔ 无管理员权限");
     }
 
-    if (msg.text === "📤 上传资源") {
-      return bot.sendMessage(
-        msg.chat.id,
-        fillText(await getBotText("upload_hint"), { bot: BOT_NAME })
-      );
-    }
+    // 已取消「📤 上传资源」按钮，用户直接发送文件即可自动创建批次。
 
     const textEditKey = "text_edit_wait_" + msg.from?.id;
     const editingTextKey = isAdmin(msg) ? await getSetting(textEditKey) : "";
