@@ -393,14 +393,26 @@ async function finalizePendingUploads(msg) {
     throw new Error("中转仓尚未绑定");
   }
 
-  // 整个批次一次性转入中转仓：3 个就是 1 次，10 个也是 1 次。
+  // Telegram copyMessages 要求 message_ids 必须严格递增。
+  // 用户连续发送文件时，update 到达顺序不一定与 message_id 顺序完全一致，
+  // 所以这里统一按原消息 ID 从小到大排序后再批量转存。
+  const orderedItems = [...pendingItems].sort(
+    (a, b) => Number(a.sourceMessageId) - Number(b.sourceMessageId)
+  );
+
+  const sourceIds = orderedItems.map(item => Number(item.sourceMessageId));
+  const hasDuplicateIds = sourceIds.some((id, index) => index > 0 && id === sourceIds[index - 1]);
+  if (hasDuplicateIds) {
+    throw new Error("当前批次存在重复的 Telegram 消息 ID，请重新发送这一批文件");
+  }
+
   const copied = await copyBatchToRelay(
     msg.chat.id,
     relayChatId,
-    pendingItems.map(item => item.sourceMessageId)
+    sourceIds
   );
 
-  pendingItems.forEach((item, index) => {
+  orderedItems.forEach((item, index) => {
     item.relayMessageId = copied[index]?.message_id || null;
   });
 
