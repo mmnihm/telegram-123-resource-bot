@@ -33,6 +33,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 let BOT_USERNAME = "";
 const pendingUploads = new Map();
 const batchPromptMessages = new Map();
+const activeBatchCodes = new Map();
 const relayBindWait = new Set();
 
 async function getSetting(key) {
@@ -62,9 +63,16 @@ function getForwardedChatId(msg) {
   return "";
 }
 
-function pendingKey(msg) { return String(msg.chat?.id || msg.from?.id || ""); }
+function pendingKey(msg) {
+  const chatId = String(msg.chat?.id || "");
+  const userId = String(msg.from?.id || "");
+  return chatId + ":" + userId;
+}
 function getPending(key) { if (!pendingUploads.has(key)) pendingUploads.set(key, []); return pendingUploads.get(key); }
-function clearPending(key) { pendingUploads.delete(key); }
+function clearPending(key) {
+  pendingUploads.delete(key);
+  activeBatchCodes.delete(key);
+}
 
 function isAdmin(msg) {
   const id = String(msg.from?.id || "");
@@ -204,9 +212,16 @@ async function uploadPendingResource(msg) {
 
 async function createBatchCode(msg) {
   const key = pendingKey(msg);
-  const existing = pendingUploads.get(key) || [];
-  if (existing.length && existing[0].code) return existing[0].code;
-  return uniqueCode();
+
+  // 一个批次从第一次发文件开始，到点击「完成上传」之前，
+  // 始终只使用同一个取件码。
+  if (activeBatchCodes.has(key)) {
+    return activeBatchCodes.get(key);
+  }
+
+  const c = await uniqueCode();
+  activeBatchCodes.set(key, c);
+  return c;
 }
 
 async function createRelayResource(msg, codeValue, relayMessageId) {
@@ -687,15 +702,25 @@ bot.on("message", async msg => {
 
       const key = pendingKey(msg);
       const list = getPending(key);
-      let batchCode = list[0]?.code;
+
+      // 只在本批次第一次收到文件时生成取件码。
+      // 在用户点击「✅ 完成上传」之前，后续所有文件都复用这个码。
+      let batchCode = activeBatchCodes.get(key);
       if (!batchCode) {
         batchCode = await createBatchCode(msg);
+      }
+
+      const copied = await bot.copyMessage(relayChatId, msg.chat.id, msg.message_id);
+      const item = await createRelayResource(msg, batchCode, copied.message_id);
+      list.push(item);
+
+      if (!batchPromptMessages.has(key)) {
         const promptMsg = await bot.sendMessage(
           msg.chat.id,
-          "📦 批次已创建\n\n" +
+          "📦 批次上传中\n\n" +
           "🔑 取件码　" + batchCode + "\n\n" +
-          "文件会先进入中转仓，再后台上传 123 云盘。\n" +
-          "继续发送文件，全部发送完成后点击下面按钮。",
+          "继续发送文件，全部发送完成后点击下面按钮。\n" +
+          "⚠️ 在点击「完成上传」之前，所有文件都会使用这个取件码。",
           {
             reply_markup: {
               inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
@@ -704,10 +729,6 @@ bot.on("message", async msg => {
         );
         batchPromptMessages.set(key, promptMsg.message_id);
       }
-
-      const copied = await bot.copyMessage(relayChatId, msg.chat.id, msg.message_id);
-      const item = await createRelayResource(msg, batchCode, copied.message_id);
-      list.push(item);
 
       // 后台上传，不再阻塞用户继续发送文件。
       uploadRelayResource(item).catch(err => console.error("BACKGROUND RELAY ERROR:", err));
