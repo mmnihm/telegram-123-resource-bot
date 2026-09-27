@@ -330,7 +330,10 @@ async function copyBatchToRelay(fromChatId, relayChatId, messageIds) {
     );
 
     if (!response.data?.ok) {
-      throw new Error(response.data?.description || "Telegram 批量转存失败");
+      throw new Error(
+        "Telegram 批量转存失败：" +
+        (response.data?.description || "未知 Telegram 错误")
+      );
     }
     copied.push(...(response.data.result || []));
   }
@@ -657,7 +660,15 @@ bot.on("callback_query", async query => {
     try {
       await bot.answerCallbackQuery(query.id, { text: "生成取件码失败", show_alert: true });
     } catch (_) {}
-    await bot.sendMessage(query.message.chat.id, "❌ 生成取件码失败，请稍后重试。");
+    const detail =
+      e?.response?.data?.description ||
+      e?.message ||
+      "未知错误";
+    await bot.sendMessage(
+      query.message.chat.id,
+      "❌ 生成取件码失败，请稍后重试。\\n\\n💡 " +
+      String(detail).slice(0, 300)
+    );
   }
 });
 
