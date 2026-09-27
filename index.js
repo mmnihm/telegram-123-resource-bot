@@ -33,6 +33,34 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 let BOT_USERNAME = "";
 const pendingUploads = new Map();
 const batchPromptMessages = new Map();
+const relayBindWait = new Set();
+
+async function getSetting(key) {
+  const { data, error } = await db.from("bot_settings").select("value").eq("key", key).maybeSingle();
+  if (error) throw error;
+  return data?.value || "";
+}
+
+async function setSetting(key, value) {
+  const { error } = await db.from("bot_settings").upsert({ key, value: String(value) });
+  if (error) throw error;
+}
+
+async function getRelayChatId() {
+  return getSetting("relay_chat_id");
+}
+
+function relayConfigured(chatId) {
+  return Boolean(chatId);
+}
+
+function getForwardedChatId(msg) {
+  if (msg.forward_from_chat?.id) return String(msg.forward_from_chat.id);
+  const origin = msg.forward_origin;
+  if (origin?.type === "channel" && origin.chat?.id) return String(origin.chat.id);
+  if (origin?.type === "chat" && origin.sender_chat?.id) return String(origin.sender_chat.id);
+  return "";
+}
 
 function pendingKey(msg) { return String(msg.chat?.id || msg.from?.id || ""); }
 function getPending(key) { if (!pendingUploads.has(key)) pendingUploads.set(key, []); return pendingUploads.get(key); }
@@ -174,26 +202,62 @@ async function uploadPendingResource(msg) {
   return { ...info, fileName: name, cloudPath };
 }
 
+async function createBatchCode(msg) {
+  const key = pendingKey(msg);
+  const existing = pendingUploads.get(key) || [];
+  if (existing.length && existing[0].code) return existing[0].code;
+  return uniqueCode();
+}
+
+async function createRelayResource(msg, codeValue, relayMessageId) {
+  const info = await getFileInfo(msg);
+  if (!info) return null;
+  const name = safeName(info.fileName);
+  const root = DAV_ROOT.replace(/\\/g, "/").replace(/\/$/, "");
+  const stamp = Date.now();
+  const random = Math.random().toString(36).slice(2, 8);
+  const cloudPath = root + "/pending/" + stamp + "_" + random + "_" + name;
+
+  const { data, error } = await db.from("resources").insert({
+    code: codeValue,
+    sort_order: Date.now(),
+    file_name: name,
+    cloud_path: cloudPath,
+    file_size: info.size || 0,
+    uploader_id: msg.from?.id || null,
+    status: "uploading"
+  }).select("*").single();
+  if (error) throw error;
+
+  const item = { ...info, fileName: name, cloudPath, relayMessageId, resourceId: data.id, code: codeValue };
+  return item;
+}
+
+async function uploadRelayResource(item) {
+  try {
+    const fileUrl = await bot.getFileLink(item.fileId);
+    await uploadToDav(fileUrl, item.cloudPath, item.size);
+    await db.from("resources").update({ status: "active" }).eq("id", item.resourceId);
+    return true;
+  } catch (e) {
+    console.error("RELAY UPLOAD ERROR:", e);
+    try { await deleteFromDav(item.cloudPath); } catch (_) {}
+    await db.from("resources").update({ status: "failed" }).eq("id", item.resourceId);
+    return false;
+  }
+}
+
 async function finalizePendingUploads(msg) {
   const key = pendingKey(msg);
   const items = pendingUploads.get(key) || [];
   if (!items.length) return null;
-  const c = await uniqueCode();
-  const rows = items.map((item, index) => ({
-    code: c,
-    sort_order: index + 1,
-    file_name: item.fileName,
-    cloud_path: item.cloudPath,
-    file_size: item.size || 0,
-    uploader_id: msg.from?.id || null
-  }));
-  const { data, error } = await db.from("resources").insert(rows).select("*");
-  if (error) {
-    for (const item of items) { try { await deleteFromDav(item.cloudPath); } catch (_) {} }
-    throw error;
-  }
+  const codeValue = items[0].code;
+  const { data, error } = await db.from("resources")
+    .select("*").eq("code", codeValue).order("sort_order", { ascending: true }).order("id", { ascending: true });
+  if (error) throw error;
   clearPending(key);
-  return { code: c, items: data || rows };
+  batchPromptMessages.delete(key);
+  return { code: codeValue, items: data || [] };
 }
 
 async function findResources(c) {
@@ -304,6 +368,8 @@ async function buildAdminPanel() {
 
   const davIcon = dav.ok ? "🟢" : (dav.status === "未配置" ? "⚪" : "🔴");
   const dbIcon = supa.ok ? "🟢" : "🔴";
+  let relayId = "";
+  try { relayId = await getRelayChatId(); } catch (_) {}
 
   return {
     text:
@@ -316,7 +382,8 @@ async function buildAdminPanel() {
       "🗄️ 数据库状态\n" +
       dbIcon + " Supabase　" + supa.status + "\n" +
       (supa.ok ? "📦 有效资源　" + supa.count + "\n" : "💡 请检查数据库配置\n") +
-      "📥 总下载　　" + downloads + "\n\n" +
+      "📥 总下载　　" + downloads + "\n" +
+      "📦 中转仓　　" + (relayId ? "🟢 已绑定" : "⚪ 未绑定") + "\n\n" +
       "⚡ 用户操作\n" +
       "发送 6 位取件码，即可一次取回该批次全部资源。\n\n" +
       "⚙️ 管理命令\n" +
@@ -330,6 +397,7 @@ async function buildAdminPanel() {
           { text: "🗄️ 检测数据库", callback_data: "admin_check_db" }
         ],
         [
+          { text: "📦 绑定中转仓", callback_data: "admin_bind_relay" },
           { text: "🔄 刷新管理中心", callback_data: "admin_refresh" }
         ]
       ]
@@ -357,15 +425,20 @@ bot.on("callback_query", async query => {
     }
 
     const batch = await finalizePendingUploads({ chat: msg.chat, from: query.from });
+    const active = batch.items.filter(x => x.status === "active").length;
+    const uploading = batch.items.filter(x => x.status === "uploading").length;
+    const failed = batch.items.filter(x => x.status === "failed").length;
 
-    batchPromptMessages.delete(key);
-    await bot.answerCallbackQuery(query.id, { text: "取件码已生成" });
+    await bot.answerCallbackQuery(query.id, { text: "批次已提交" });
     return bot.editMessageText(
-      "✅ 批次上传完成\n\n" +
+      (uploading || failed ? "⏳ 批次已提交，后台继续处理" : "✅ 批次上传完成") + "\n\n" +
       "📦 文件数量　" + batch.items.length + " 个\n" +
+      "🟢 已入库　　" + active + " 个\n" +
+      (uploading ? "⏳ 上传中　　" + uploading + " 个\n" : "") +
+      (failed ? "🔴 失败　　　" + failed + " 个\n" : "") +
       "🔑 取件码　　" + batch.code + "\n\n" +
-      "这一批文件共用一个取件码。\n" +
-      "发送取件码即可取回全部文件。",
+      "发送取件码即可取回已完成入库的文件。\n" +
+      "其余文件上传完成后会自动加入这个取件码。",
       {
         chat_id: msg.chat.id,
         message_id: msg.message_id
@@ -414,6 +487,17 @@ bot.on("callback_query", async query => {
       );
     }
 
+    if (query.data === "admin_bind_relay") {
+      relayBindWait.add(String(query.from.id));
+      await bot.answerCallbackQuery(query.id, { text: "请转发中转群/频道消息" });
+      return bot.sendMessage(
+        msg.chat.id,
+        "📦 绑定中转仓\n\n" +
+        "请把中转群/频道中的任意一条消息直接转发给我。\n" +
+        "机器人会自动识别，无需填写 Chat ID。"
+      );
+    }
+
     if (query.data === "admin_refresh") {
       const panel = await buildAdminPanel();
       await bot.answerCallbackQuery(query.id, { text: "已刷新" });
@@ -442,6 +526,18 @@ bot.onText(/^\/start$/, async msg => {
     "一个取件码对应一整批文件，发送取件码即可全部取回。\n\n" +
     "💡 无需输入命令，发送文件或取件码即可。",
     menu(isAdmin(msg))
+  );
+});
+
+bot.onText(/^\/bindrelay$/i, async msg => {
+  if (!isAdmin(msg)) return bot.sendMessage(msg.chat.id, "⛔ 无管理员权限");
+  relayBindWait.add(String(msg.from.id));
+  await bot.sendMessage(
+    msg.chat.id,
+    "📦 绑定中转仓\n\n" +
+    "1. 先把机器人加入你的私密群或频道，并设置为管理员。\n" +
+    "2. 然后把中转群/频道中的任意一条消息直接转发给我。\n\n" +
+    "机器人会自动识别并保存中转仓，无需填写 Chat ID。"
   );
 });
 
@@ -546,6 +642,23 @@ bot.on("message", async msg => {
       );
     }
 
+    if (relayBindWait.has(String(msg.from?.id || "")) && isAdmin(msg)) {
+      const relayId = getForwardedChatId(msg);
+      if (!relayId) {
+        return bot.sendMessage(msg.chat.id,
+          "⚠️ 没有识别到来源群/频道。\n\n请把中转群或频道中的任意一条消息直接转发给我。"
+        );
+      }
+      await setSetting("relay_chat_id", relayId);
+      relayBindWait.delete(String(msg.from.id));
+      return bot.sendMessage(
+        msg.chat.id,
+        "✅ 中转仓绑定成功\n\n" +
+        "📦 中转仓 ID　" + relayId + "\n\n" +
+        "以后用户发送的文件会先转存到这里，再由后台上传到 123 云盘。"
+      );
+    }
+
     const info = await getFileInfo(msg);
     if (info) {
       if (!davConfigured()) {
@@ -553,16 +666,25 @@ bot.on("message", async msg => {
           "⚠️ 存储服务尚未配置完成\n\n当前无法保存资源，请联系管理员检查 123 云盘 WebDAV 配置。"
         );
       }
-      const item = await uploadPendingResource(msg);
+
+      const relayChatId = await getRelayChatId();
+      if (!relayConfigured(relayChatId)) {
+        return bot.sendMessage(
+          msg.chat.id,
+          "⚠️ 还没有设置中转仓\n\n管理员请进入 /admin 绑定中转群或频道。"
+        );
+      }
+
       const key = pendingKey(msg);
       const list = getPending(key);
-      list.push(item);
-
-      if (!batchPromptMessages.has(key)) {
+      let batchCode = list[0]?.code;
+      if (!batchCode) {
+        batchCode = await createBatchCode(msg);
         const promptMsg = await bot.sendMessage(
           msg.chat.id,
-          "📦 批次上传中\n\n" +
-          "文件已加入当前批次。\n" +
+          "📦 批次已创建\n\n" +
+          "🔑 取件码　" + batchCode + "\n\n" +
+          "文件会先进入中转仓，再后台上传 123 云盘。\n" +
           "继续发送文件，全部发送完成后点击下面按钮。",
           {
             reply_markup: {
@@ -572,6 +694,13 @@ bot.on("message", async msg => {
         );
         batchPromptMessages.set(key, promptMsg.message_id);
       }
+
+      const copied = await bot.copyMessage(relayChatId, msg.chat.id, msg.message_id);
+      const item = await createRelayResource(msg, batchCode, copied.message_id);
+      list.push(item);
+
+      // 后台上传，不再阻塞用户继续发送文件。
+      uploadRelayResource(item).catch(err => console.error("BACKGROUND RELAY ERROR:", err));
       return;
     }
 
