@@ -541,6 +541,12 @@ bot.on("callback_query", async query => {
     const msg = query.message;
     if (!msg) return bot.answerCallbackQuery(query.id);
     const key = pendingKey({ chat: msg.chat, from: query.from });
+
+    // 如果用户刚刚连续发送了多个文件，先等待这些消息全部加入当前批次，
+    // 防止「点击完成上传」和最后几个文件的 update 同时到达时漏文件。
+    const queue = batchQueues.get(key);
+    if (queue) await queue;
+
     const pending = pendingUploads.get(key) || [];
     if (!pending.length) {
       await bot.answerCallbackQuery(query.id, { text: "当前没有待完成的文件", show_alert: true });
