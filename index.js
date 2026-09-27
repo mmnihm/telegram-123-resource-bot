@@ -539,3 +539,52 @@ bot.on("message", async msg => {
       );
     }
 
+    if (msg.text) {
+      const match = msg.text.match(/(?<![A-Za-z0-9])[A-HJ-NP-Z2-9]{6}(?![A-Za-z0-9])/i);
+      if (match) {
+        const items = await findResources(match[0]);
+        if (!items.length) {
+          return bot.sendMessage(msg.chat.id, "❌ 未找到对应资源\n\n请检查取件码是否正确。");
+        }
+        await bot.sendMessage(
+          msg.chat.id,
+          "📦 正在发送资源…\n\n共 " + items.length + " 个文件，请稍候。"
+        );
+        try {
+          await sendResourceBatch(msg.chat.id, items);
+        } catch (e) {
+          console.error("SEND RESOURCE ERROR:", e);
+          return bot.sendMessage(
+            msg.chat.id,
+            "❌ 资源发送失败\n\n请联系管理员检查云盘连接。"
+          );
+        }
+        return;
+      }
+    }
+  } catch (e) {
+    console.error("MESSAGE ERROR:", e);
+    await bot.sendMessage(
+      msg.chat.id,
+      "❌ 操作失败，请稍后重试。"
+    );
+  }
+});
+
+bot.getMe()
+  .then(me => {
+    BOT_USERNAME = me.username || "";
+    console.log("Bot started: @" + (BOT_USERNAME || "unknown"));
+    return ensureDavRoot();
+  })
+  .catch(err => {
+    console.error("Bot startup check failed:", err);
+  });
+
+process.on("unhandledRejection", err => {
+  console.error("UNHANDLED REJECTION:", err);
+});
+
+process.on("uncaughtException", err => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
