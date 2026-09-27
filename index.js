@@ -222,7 +222,7 @@ async function adminStats(chatId) {
   );
 }
 
-bot.onText(/^\\/start$/, async msg => {
+bot.onText(/^\/start$/, async msg => {
   await bot.sendMessage(msg.chat.id,
     "👋 欢迎使用 " + BOT_NAME + "\n\n" +
     "📤 直接发送文件，机器人会保存到 123 云盘并生成取件码。\n" +
@@ -231,7 +231,7 @@ bot.onText(/^\\/start$/, async msg => {
   );
 });
 
-bot.onText(/^\\/admin$/, async msg => {
+bot.onText(/^\/admin$/, async msg => {
   if (!isAdmin(msg)) return bot.sendMessage(msg.chat.id, "⛔ 无管理员权限");
   try {
     await adminStats(msg.chat.id);
@@ -241,7 +241,7 @@ bot.onText(/^\\/admin$/, async msg => {
   }
 });
 
-bot.onText(/^\\/resource\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
+bot.onText(/^\/resource\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   try {
     const r = await findResource(m[1]);
@@ -261,7 +261,7 @@ bot.onText(/^\\/resource\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   }
 });
 
-bot.onText(/^\\/search\\s+(.+)$/i, async (msg, m) => {
+bot.onText(/^\/search\s+(.+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   try {
     const q = m[1].trim();
@@ -281,7 +281,7 @@ bot.onText(/^\\/search\\s+(.+)$/i, async (msg, m) => {
   }
 });
 
-bot.onText(/^\\/delete\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
+bot.onText(/^\/delete\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   try {
     const r = await findResource(m[1]);
