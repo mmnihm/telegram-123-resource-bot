@@ -209,7 +209,7 @@ bot.onText(/^\/admin$/, async msg => {
   await adminStats(msg.chat.id);
 });
 
-bot.onText(/^\/resource\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
+bot.onText(/^\/resource\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   const r = await findResource(m[1]);
   if (!r) return bot.sendMessage(msg.chat.id, "❌ 未找到资源");
@@ -224,7 +224,7 @@ bot.onText(/^\/resource\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   );
 });
 
-bot.onText(/^\/search\\s+(.+)$/i, async (msg, m) => {
+bot.onText(/^\/search\s+(.+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   const q = m[1].trim();
   const { data, error } = await db.from("resources")
@@ -239,7 +239,7 @@ bot.onText(/^\/search\\s+(.+)$/i, async (msg, m) => {
   );
 });
 
-bot.onText(/^\/delete\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
+bot.onText(/^\/delete\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   const r = await findResource(m[1]);
   if (!r) return bot.sendMessage(msg.chat.id, "❌ 未找到资源");
