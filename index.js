@@ -529,7 +529,7 @@ bot.on("message", async msg => {
 
     await bot.sendMessage(msg.chat.id, "⚠️ 操作未完成\n\n" +
       "原因：" + reason + "\n\n" +
-      "请稍后再试。若问题持续，请联系管理员。);
+      "请稍后再试。若问题持续，请联系管理员。");
   }
 });
 
