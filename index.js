@@ -46,6 +46,7 @@ function isAdmin(msg) {
 function menu(isAdminUser = false) {
   const rows = [
     [{ text: "📤 上传资源" }],
+    [{ text: "✅ 完成上传" }],
     [{ text: "📖 使用说明" }]
   ];
   if (isAdminUser) rows.push([{ text: "🛠 管理中心" }]);
