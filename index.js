@@ -39,7 +39,7 @@ function isAdmin(msg) {
 
 function menu(isAdminUser = false) {
   const rows = [
-    [{ text: "📤 上传资源" }, { text: "🔑 输入取件码" }],
+    [{ text: "📤 上传资源" }],
     [{ text: "📖 使用说明" }]
   ];
   if (isAdminUser) rows.push([{ text: "🛠 管理中心" }]);
@@ -204,23 +204,165 @@ async function sendResource(chatId, resource) {
   await db.from("resources").update({ downloads: (resource.downloads || 0) + 1 }).eq("id", resource.id);
 }
 
-async function adminStats(chatId) {
-  const { count, error } = await db.from("resources")
-    .select("*", { count: "exact", head: true }).eq("status", "active");
-  if (error) throw error;
-  const { data } = await db.from("resources")
-    .select("downloads").eq("status", "active");
-  const downloads = (data || []).reduce((n, x) => n + Number(x.downloads || 0), 0);
-  await bot.sendMessage(chatId,
-    "🛠 管理中心\n\n" +
-    "📦 有效资源：" + (count || 0) + "\n" +
-    "📥 总下载：" + downloads + "\n\n" +
-    "可用命令：\n" +
-    "/search 关键词\n" +
-    "/delete 取件码\n" +
-    "/resource 取件码"
-  );
+async function checkDav() {
+  if (!davConfigured()) {
+    return { ok: false, status: "未配置", detail: "请填写 DAV_URL、DAV_USERNAME、DAV_PASSWORD" };
+  }
+
+  try {
+    const root = DAV_ROOT.replace(/\\/g, "/").replace(/\/$/, "");
+    const res = await axios.request({
+      method: "PROPFIND",
+      url: davUrl(root),
+      auth: { username: DAV_USERNAME, password: DAV_PASSWORD },
+      headers: { Depth: "0" },
+      timeout: 15000,
+      validateStatus: () => true
+    });
+
+    if (res.status >= 200 && res.status < 300) {
+      return { ok: true, status: "已连接", detail: "WebDAV 正常" };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, status: "认证失败", detail: "账号或密码不正确" };
+    }
+    if (res.status === 404) {
+      return { ok: false, status: "路径不存在", detail: "DAV_ROOT 不存在或路径错误" };
+    }
+    if (res.status >= 500) {
+      return { ok: false, status: "服务异常", detail: "WebDAV 返回 HTTP " + res.status };
+    }
+    return { ok: false, status: "连接异常", detail: "WebDAV 返回 HTTP " + res.status };
+  } catch (e) {
+    return {
+      ok: false,
+      status: "连接失败",
+      detail: e?.message?.slice(0, 120) || "网络连接失败"
+    };
+  }
 }
+
+async function checkSupabase() {
+  try {
+    const { count, error } = await db
+      .from("resources")
+      .select("*", { count: "exact", head: true });
+
+    if (error) throw error;
+    return { ok: true, status: "正常", count: count || 0 };
+  } catch (e) {
+    return {
+      ok: false,
+      status: "异常",
+      detail: e?.message?.slice(0, 120) || "数据库连接失败"
+    };
+  }
+}
+
+async function buildAdminPanel() {
+  const [dav, supa] = await Promise.all([checkDav(), checkSupabase()]);
+
+  let downloads = 0;
+  if (supa.ok) {
+    const { data, error } = await db
+      .from("resources")
+      .select("downloads")
+      .eq("status", "active");
+    if (!error) {
+      downloads = (data || []).reduce((n, x) => n + Number(x.downloads || 0), 0);
+    }
+  }
+
+  const davIcon = dav.ok ? "🟢" : (dav.status === "未配置" ? "⚪" : "🔴");
+  const dbIcon = supa.ok ? "🟢" : "🔴";
+
+  return {
+    text:
+      "🛠 管理中心\\n\\n" +
+      "☁️ 123云盘：" + davIcon + " " + dav.status + "\\n" +
+      "📁 仓库目录：" + DAV_ROOT + "\\n" +
+      (dav.detail ? "   " + dav.detail + "\\n" : "") +
+      "\\n" +
+      "🗄️ 数据库：" + dbIcon + " " + supa.status + "\\n" +
+      (supa.ok ? "📦 有效资源：" + supa.count + "\\n" : "   " + (supa.detail || "") + "\\n") +
+      "📥 总下载：" + downloads + "\\n\\n" +
+      "🔑 用户无需点击取件按钮，直接发送 6 位取件码即可。\\n\\n" +
+      "可用命令：\\n" +
+      "/search 关键词\\n" +
+      "/delete 取件码\\n" +
+      "/resource 取件码",
+    keyboard: {
+      inline_keyboard: [
+        [
+          { text: "🔄 检测云盘", callback_data: "admin_check_dav" },
+          { text: "🔄 检测数据库", callback_data: "admin_check_db" }
+        ],
+        [
+          { text: "♻️ 刷新管理中心", callback_data: "admin_refresh" }
+        ]
+      ]
+    }
+  };
+}
+
+async function adminStats(chatId) {
+  const panel = await buildAdminPanel();
+  await bot.sendMessage(chatId, panel.text, {
+    reply_markup: panel.keyboard
+  });
+}
+
+bot.on("callback_query", async query => {
+  try {
+    const msg = query.message;
+    if (!msg || !isAdmin({ from: query.from })) {
+      return bot.answerCallbackQuery(query.id, {
+        text: "⛔ 无管理员权限",
+        show_alert: true
+      });
+    }
+
+    if (query.data === "admin_check_dav") {
+      const dav = await checkDav();
+      await bot.answerCallbackQuery(query.id, { text: dav.status });
+      return bot.sendMessage(
+        msg.chat.id,
+        "☁️ 123云盘检测\\n\\n" +
+        (dav.ok ? "🟢 " : "🔴 ") + dav.status + "\\n" +
+        "📁 仓库目录：" + DAV_ROOT + "\\n" +
+        "ℹ️ " + dav.detail
+      );
+    }
+
+    if (query.data === "admin_check_db") {
+      const supa = await checkSupabase();
+      await bot.answerCallbackQuery(query.id, { text: supa.status });
+      return bot.sendMessage(
+        msg.chat.id,
+        "🗄️ Supabase 检测\\n\\n" +
+        (supa.ok ? "🟢 " : "🔴 ") + supa.status + "\\n" +
+        (supa.ok ? "📦 资源数量：" + supa.count : "ℹ️ " + supa.detail)
+      );
+    }
+
+    if (query.data === "admin_refresh") {
+      const panel = await buildAdminPanel();
+      await bot.answerCallbackQuery(query.id, { text: "已刷新" });
+      return bot.editMessageText(panel.text, {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+        reply_markup: panel.keyboard
+      });
+    }
+
+    await bot.answerCallbackQuery(query.id);
+  } catch (e) {
+    console.error("CALLBACK ERROR:", e);
+    try {
+      await bot.answerCallbackQuery(query.id, { text: "操作失败，请稍后重试" });
+    } catch (_) {}
+  }
+});
 
 bot.onText(/^\/start$/, async msg => {
   await bot.sendMessage(msg.chat.id,
@@ -313,10 +455,6 @@ bot.on("message", async msg => {
       return bot.sendMessage(msg.chat.id, "⛔ 无管理员权限");
     }
 
-    if (msg.text === "🔑 输入取件码") {
-      return bot.sendMessage(msg.chat.id, "请输入 6 位取件码，例如：K8F3X9");
-    }
-
     if (msg.text === "📤 上传资源") {
       return bot.sendMessage(msg.chat.id, "📤 请直接发送文件给我。");
     }
@@ -369,7 +507,7 @@ bot.on("message", async msg => {
       reason = e.message.slice(0, 120);
     }
 
-    await bot.sendMessage(msg.chat.id, "❌ 操作失败\\n\\n原因：" + reason + "\\n\\n请稍后重试；如果持续出现，请检查 Render 日志。");
+    await bot.sendMessage(msg.chat.id, "❌ 操作失败\n\n原因：" + reason + "\n\n请稍后重试；如果持续出现，请检查 Render 日志。");
   }
 });
 
