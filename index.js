@@ -656,7 +656,7 @@ bot.on("callback_query", async query => {
       }
     );
   } catch (e) {
-    console.error("FINISH UPLOAD ERROR:", e);
+    console.error("FINISH UPLOAD ERROR:", e?.response?.data || e);
     try {
       await bot.answerCallbackQuery(query.id, { text: "生成取件码失败", show_alert: true });
     } catch (_) {}
@@ -1002,10 +1002,15 @@ bot.on("message", async msg => {
             );
           } catch (e) {
             console.error("AUTO FINISH ERROR:", e);
+            const detail =
+              e?.response?.data?.description ||
+              e?.response?.data?.error_code ||
+              e?.message ||
+              "未知错误";
             await bot.sendMessage(
               msg.chat.id,
               "❌ 自动生成取件码失败，请稍后重试。\\n\\n💡 " +
-              (e?.message || "未知错误").slice(0, 180)
+              String(detail).slice(0, 300)
             );
           }
         }, BATCH_AUTO_FINISH_MS);
