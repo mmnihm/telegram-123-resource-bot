@@ -63,8 +63,9 @@ function code() {
 async function uniqueCode() {
   for (let i = 0; i < 20; i++) {
     const c = code();
-    const { data } = await db.from("resources").select("id").eq("code", c).maybeSingle();
-    if (!data) return c;
+    const { data, error } = await db.from("resources").select("id").eq("code", c).limit(1);
+    if (error) throw error;
+    if (!data?.length) return c;
   }
   throw new Error("无法生成唯一取件码");
 }
@@ -178,8 +179,9 @@ async function finalizePendingUploads(msg) {
   const items = pendingUploads.get(key) || [];
   if (!items.length) return null;
   const c = await uniqueCode();
-  const rows = items.map(item => ({
+  const rows = items.map((item, index) => ({
     code: c,
+    sort_order: index + 1,
     file_name: item.fileName,
     cloud_path: item.cloudPath,
     file_size: item.size || 0,
@@ -196,7 +198,7 @@ async function finalizePendingUploads(msg) {
 
 async function findResources(c) {
   const { data, error } = await db.from("resources")
-    .select("*").eq("code", c.toUpperCase()).eq("status", "active").order("id", { ascending: true });
+    .select("*").eq("code", c.toUpperCase()).eq("status", "active").order("sort_order", { ascending: true }).order("id", { ascending: true });
   if (error) throw error;
   return data || [];
 }
@@ -416,7 +418,7 @@ bot.onText(/^\/admin$/, async msg => {
   }
 });
 
-bot.onText(/^\\/resource\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
+bot.onText(/^\/resource\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   try {
     const items = await findResources(m[1]);
@@ -464,7 +466,7 @@ bot.onText(/^\/search\s+(.+)$/i, async (msg, m) => {
   }
 });
 
-bot.onText(/^\\/delete\\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
+bot.onText(/^\/delete\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   try {
     const items = await findResources(m[1]);
