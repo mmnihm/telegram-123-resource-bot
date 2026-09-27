@@ -935,10 +935,16 @@ bot.on("message", async msg => {
         const item = await createRelayResource(msg, batchCode, list.length + 1);
         if (item) list.push(item);
 
+        const promptText = fillText(await getBotText("batch_prompt"), {
+          code: batchCode,
+          count: list.length,
+          bot: BOT_NAME
+        });
+
         if (!batchPromptMessages.has(key)) {
           const promptMsg = await bot.sendMessage(
             msg.chat.id,
-            fillText(await getBotText("batch_prompt"), { code: batchCode, count: list.length, bot: BOT_NAME }),
+            promptText,
             {
               reply_markup: {
                 inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
@@ -946,6 +952,22 @@ bot.on("message", async msg => {
             }
           );
           batchPromptMessages.set(key, promptMsg.message_id);
+        } else {
+          const promptMessageId = batchPromptMessages.get(key);
+          try {
+            await bot.editMessageText(promptText, {
+              chat_id: msg.chat.id,
+              message_id: promptMessageId,
+              reply_markup: {
+                inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
+              }
+            });
+          } catch (e) {
+            // Telegram 在文字没有变化时会返回 MESSAGE_NOT_MODIFIED，忽略即可。
+            if (!String(e?.message || "").includes("message is not modified")) {
+              console.error("BATCH PROMPT UPDATE ERROR:", e);
+            }
+          }
         }
 
         // 这里只收集，不逐个转发、不逐个入库、不逐个上传。
