@@ -35,6 +35,19 @@ const pendingUploads = new Map();
 const batchPromptMessages = new Map();
 const activeBatchCodes = new Map();
 const relayBindWait = new Set();
+const batchQueues = new Map();
+
+function enqueueBatch(key, task) {
+  const previous = batchQueues.get(key) || Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(task)
+    .finally(() => {
+      if (batchQueues.get(key) === current) batchQueues.delete(key);
+    });
+  batchQueues.set(key, current);
+  return current;
+}
 
 async function getSetting(key) {
   const { data, error } = await db.from("bot_settings").select("value").eq("key", key).maybeSingle();
@@ -743,38 +756,53 @@ bot.on("message", async msg => {
       }
 
       const key = pendingKey(msg);
-      const list = getPending(key);
 
-      // 只在本批次第一次收到文件时生成取件码。
-      // 在用户点击「✅ 完成上传」之前，后续所有文件都复用这个码。
-      let batchCode = activeBatchCodes.get(key);
-      if (!batchCode) {
-        batchCode = await createBatchCode(msg);
-      }
+      // Telegram 一次发送多个文件时，会快速产生多个独立 update。
+      // 必须按用户/聊天串行处理，否则多个 update 会同时生成取件码、同时操作批次，
+      // 从而出现「❌ 操作失败」或批次数据不完整。
+      return enqueueBatch(key, async () => {
+        const list = getPending(key);
 
-      const copied = await bot.copyMessage(relayChatId, msg.chat.id, msg.message_id);
-      const item = await createRelayResource(msg, batchCode, copied.message_id, list.length + 1);
-      list.push(item);
+        // 只在本批次第一次收到文件时生成取件码。
+        // 在用户点击「完成上传」之前，后续所有文件都复用这个码。
+        let batchCode = activeBatchCodes.get(key);
+        if (!batchCode) {
+          batchCode = await createBatchCode(msg);
+        }
 
-      if (!batchPromptMessages.has(key)) {
-        const promptMsg = await bot.sendMessage(
-          msg.chat.id,
-          "📦 批次上传中\n\n" +
-          "🔑 取件码　" + batchCode + "\n\n" +
-          "继续发送文件，全部发送完成后点击下面按钮。\n" +
-          "⚠️ 在点击「完成上传」之前，所有文件都会使用这个取件码。",
-          {
-            reply_markup: {
-              inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
+        const copied = await bot.copyMessage(relayChatId, msg.chat.id, msg.message_id);
+        const item = await createRelayResource(msg, batchCode, copied.message_id, list.length + 1);
+        list.push(item);
+
+        if (!batchPromptMessages.has(key)) {
+          const promptMsg = await bot.sendMessage(
+            msg.chat.id,
+            "📦 批次上传中\n\n" +
+            "🔑 取件码　" + batchCode + "\n\n" +
+            "继续发送文件，全部发送完成后点击下面按钮。\n" +
+            "⚠️ 在点击「完成上传」之前，所有文件都会使用这个取件码。",
+            {
+              reply_markup: {
+                inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
+              }
             }
-          }
-        );
-        batchPromptMessages.set(key, promptMsg.message_id);
-      }
+          );
+          batchPromptMessages.set(key, promptMsg.message_id);
+        }
 
-      // 这里只收集文件，不逐个入库、不逐个上传。
-      // 点击「✅ 完成上传」后，整个批次一次性写入 resources，再统一进入后台上传。
-      return;
+        // 这里只收集文件，不逐个入库、不逐个上传。
+        // 点击「✅ 完成上传」后，整个批次一次性写入 resources，再统一进入后台上传。
+      }).catch(async e => {
+        console.error("BATCH COLLECT ERROR:", e);
+        try {
+          await bot.sendMessage(
+            msg.chat.id,
+            "❌ 文件加入批次失败\n\n" +
+            "📄 " + (info.fileName || "未知文件") + "\n" +
+            "💡 " + (e?.message || "未知错误").slice(0, 180)
+          );
+        } catch (_) {}
+      });
     }
 
     if (msg.text) {
@@ -804,7 +832,8 @@ bot.on("message", async msg => {
     console.error("MESSAGE ERROR:", e);
     await bot.sendMessage(
       msg.chat.id,
-      "❌ 操作失败，请稍后重试。"
+      "❌ 操作失败，请稍后重试。\n\n" +
+      "💡 " + (e?.message || "未知错误").slice(0, 180)
     );
   }
 });
