@@ -349,7 +349,8 @@ bot.on("callback_query", async query => {
   try {
     const msg = query.message;
     if (!msg) return bot.answerCallbackQuery(query.id);
-    const pending = getPending(pendingKey({ chat: msg.chat, from: query.from }));
+    const key = pendingKey({ chat: msg.chat, from: query.from });
+    const pending = pendingUploads.get(key) || [];
     if (!pending.length) {
       await bot.answerCallbackQuery(query.id, { text: "当前没有待完成的文件", show_alert: true });
       return;
@@ -357,7 +358,7 @@ bot.on("callback_query", async query => {
 
     const batch = await finalizePendingUploads({ chat: msg.chat, from: query.from });
 
-    batchPromptMessages.delete(pendingKey({ chat: msg.chat, from: query.from }));
+    batchPromptMessages.delete(key);
     await bot.answerCallbackQuery(query.id, { text: "取件码已生成" });
     return bot.editMessageText(
       "✅ 批次上传完成\n\n" +
@@ -552,7 +553,6 @@ bot.on("message", async msg => {
           "⚠️ 存储服务尚未配置完成\n\n当前无法保存资源，请联系管理员检查 123 云盘 WebDAV 配置。"
         );
       }
-      await bot.sendMessage(msg.chat.id, "⏳ 正在保存文件…\n\n📄 " + info.fileName + "\n请稍候。");
       const item = await uploadPendingResource(msg);
       const key = pendingKey(msg);
       const list = getPending(key);
@@ -562,8 +562,8 @@ bot.on("message", async msg => {
         const promptMsg = await bot.sendMessage(
           msg.chat.id,
           "📦 批次上传中\n\n" +
-          "当前已加入 " + list.length + " 个文件。\n" +
-          "继续发送文件；全部发送完成后，点击下面按钮生成一个取件码。",
+          "文件已加入当前批次。\n" +
+          "继续发送文件，全部发送完成后点击下面按钮。",
           {
             reply_markup: {
               inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
