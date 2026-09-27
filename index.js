@@ -32,6 +32,7 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 let BOT_USERNAME = "";
 const pendingUploads = new Map();
+const batchPromptMessages = new Map();
 
 function pendingKey(msg) { return String(msg.chat?.id || msg.from?.id || ""); }
 function getPending(key) { if (!pendingUploads.has(key)) pendingUploads.set(key, []); return pendingUploads.get(key); }
@@ -46,7 +47,6 @@ function isAdmin(msg) {
 function menu(isAdminUser = false) {
   const rows = [
     [{ text: "📤 上传资源" }],
-    [{ text: "✅ 完成上传" }],
     [{ text: "📖 使用说明" }]
   ];
   if (isAdminUser) rows.push([{ text: "🛠 管理中心" }]);
@@ -345,7 +345,43 @@ async function adminStats(chatId) {
 }
 
 bot.on("callback_query", async query => {
+  if (query.data !== "finish_upload") return;
   try {
+    const msg = query.message;
+    if (!msg) return bot.answerCallbackQuery(query.id);
+    const pending = getPending(pendingKey({ chat: msg.chat, from: query.from }));
+    if (!pending.length) {
+      await bot.answerCallbackQuery(query.id, { text: "当前没有待完成的文件", show_alert: true });
+      return;
+    }
+
+    const batch = await finalizePendingUploads({ chat: msg.chat, from: query.from });
+
+    batchPromptMessages.delete(pendingKey({ chat: msg.chat, from: query.from }));
+    await bot.answerCallbackQuery(query.id, { text: "取件码已生成" });
+    return bot.editMessageText(
+      "✅ 批次上传完成\n\n" +
+      "📦 文件数量　" + batch.items.length + " 个\n" +
+      "🔑 取件码　　" + batch.code + "\n\n" +
+      "这一批文件共用一个取件码。\n" +
+      "发送取件码即可取回全部文件。",
+      {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id
+      }
+    );
+  } catch (e) {
+    console.error("FINISH UPLOAD ERROR:", e);
+    try {
+      await bot.answerCallbackQuery(query.id, { text: "生成取件码失败", show_alert: true });
+    } catch (_) {}
+    await bot.sendMessage(query.message.chat.id, "❌ 生成取件码失败，请稍后重试。");
+  }
+});
+
+bot.on("callback_query", async query => {
+  try {
+    if (query.data === "finish_upload") return;
     const msg = query.message;
     if (!msg || !isAdmin({ from: query.from })) {
       return bot.answerCallbackQuery(query.id, {
@@ -505,28 +541,7 @@ bot.on("message", async msg => {
         msg.chat.id,
         "📤 请连续发送文件\n\n" +
         "文件会自动加入当前批次。\n" +
-        "全部发送完成后，点击「✅ 完成上传」，机器人会立即生成一个取件码。"
-      );
-    }
-
-    if (msg.text === "✅ 完成上传") {
-      const pending = getPending(pendingKey(msg));
-      if (!pending.length) {
-        return bot.sendMessage(
-          msg.chat.id,
-          "📭 当前没有待完成的上传。\n\n请先发送文件。"
-        );
-      }
-
-      const batch = await finalizePendingUploads(msg);
-      return bot.sendMessage(
-        msg.chat.id,
-        "✅ 批次上传完成\n\n" +
-        "📦 文件数量　" + batch.items.length + " 个\n" +
-        "🔑 取件码　　" + batch.code + "\n\n" +
-        "这一批文件共用一个取件码。\n" +
-        "发送取件码即可取回全部文件。" +
-        (BOT_USERNAME ? "\n\n📲 机器人：@" + BOT_USERNAME : "")
+        "发送完后，在批次提示下方点击「✅ 完成上传」即可生成取件码。"
       );
     }
 
@@ -539,8 +554,24 @@ bot.on("message", async msg => {
       }
       await bot.sendMessage(msg.chat.id, "⏳ 正在保存文件…\n\n📄 " + info.fileName + "\n请稍候。");
       const item = await uploadPendingResource(msg);
-      const list = getPending(pendingKey(msg));
+      const key = pendingKey(msg);
+      const list = getPending(key);
       list.push(item);
+
+      if (!batchPromptMessages.has(key)) {
+        const promptMsg = await bot.sendMessage(
+          msg.chat.id,
+          "📦 批次上传中\n\n" +
+          "当前已加入 " + list.length + " 个文件。\n" +
+          "继续发送文件；全部发送完成后，点击下面按钮生成一个取件码。",
+          {
+            reply_markup: {
+              inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
+            }
+          }
+        );
+        batchPromptMessages.set(key, promptMsg.message_id);
+      }
       return;
     }
 
