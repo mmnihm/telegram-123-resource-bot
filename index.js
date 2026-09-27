@@ -456,7 +456,7 @@ async function sendResource(chatId, resource) {
     timeout: 120000
   });
   await bot.sendDocument(chatId, response.data, {
-    caption: fillText(PICKUP_SUCCESS_TEXT, { name: resource.file_name, code: resource.code, bot: BOT_NAME })
+    caption: fillText(await getBotText("pickup_success"), { name: resource.file_name, code: resource.code, bot: BOT_NAME })
   }, {
     filename: resource.file_name,
     contentType: response.headers["content-type"] || "application/octet-stream"
@@ -525,6 +525,40 @@ async function checkSupabase() {
   }
 }
 
+async function getBotText(key) {
+  const value = await getSetting("text_" + key);
+  if (value) return value;
+  const defaults = {
+    welcome: WELCOME_TEXT,
+    upload_hint: UPLOAD_HINT_TEXT,
+    batch_prompt: BATCH_PROMPT_TEXT,
+    pickup_code: PICKUP_CODE_TEXT,
+    pickup_success: PICKUP_SUCCESS_TEXT
+  };
+  return defaults[key] || "";
+}
+
+function adminTextMenu() {
+  return {
+    inline_keyboard: [
+      [{ text: "👋 修改欢迎语", callback_data: "text_edit_welcome" }],
+      [{ text: "📤 修改上传提示", callback_data: "text_edit_upload_hint" }],
+      [{ text: "📦 修改批次提示", callback_data: "text_edit_batch_prompt" }],
+      [{ text: "🔑 修改取件码文字", callback_data: "text_edit_pickup_code" }],
+      [{ text: "📥 修改取件成功提示", callback_data: "text_edit_pickup_success" }],
+      [{ text: "⬅️ 返回管理中心", callback_data: "admin_refresh" }]
+    ]
+  };
+}
+
+async function sendTextSettings(chatId) {
+  return bot.sendMessage(
+    chatId,
+    "✏️ 用户文案设置\n\n请选择要修改的内容：",
+    { reply_markup: adminTextMenu() }
+  );
+}
+
 async function buildAdminPanel() {
   const [dav, supa] = await Promise.all([checkDav(), checkSupabase()]);
 
@@ -571,6 +605,8 @@ async function buildAdminPanel() {
         ],
         [
           { text: "📦 绑定中转仓", callback_data: "admin_bind_relay" },
+          { text: "✏️ 用户文案", callback_data: "admin_texts" }],
+        [
           { text: "🔄 刷新管理中心", callback_data: "admin_refresh" }
         ]
       ]
@@ -608,7 +644,7 @@ bot.on("callback_query", async query => {
 
     await bot.answerCallbackQuery(query.id, { text: "整批已入库，后台上传中" });
     return bot.editMessageText(
-      fillText(PICKUP_CODE_TEXT, { count, code: batch.code, bot: BOT_NAME }),
+      fillText(await getBotText("pickup_code"), { count, code: batch.code, bot: BOT_NAME }),
       {
         chat_id: msg.chat.id,
         message_id: msg.message_id
@@ -632,6 +668,31 @@ bot.on("callback_query", async query => {
         text: "⛔ 暂无管理权限\n\n该功能仅限管理员使用。",
         show_alert: true
       });
+    }
+
+    if (query.data === "admin_texts") {
+      await bot.answerCallbackQuery(query.id);
+      return sendTextSettings(msg.chat.id);
+    }
+
+    const textMap = {
+      text_edit_welcome: ["welcome", "👋 欢迎语"],
+      text_edit_upload_hint: ["upload_hint", "📤 上传提示"],
+      text_edit_batch_prompt: ["batch_prompt", "📦 批次提示"],
+      text_edit_pickup_code: ["pickup_code", "🔑 取件码文字"],
+      text_edit_pickup_success: ["pickup_success", "📥 取件成功提示"]
+    };
+
+    if (textMap[query.data]) {
+      const [key, label] = textMap[query.data];
+      relayBindWait.delete(String(query.from.id));
+      const editKey = "text_edit_wait_" + query.from.id;
+      await setSetting(editKey, key);
+      await bot.answerCallbackQuery(query.id, { text: "请发送新的" + label });
+      return bot.sendMessage(
+        msg.chat.id,
+        "✏️ " + label + "\n\n请直接发送新的文字。\n\n可使用变量：{bot} {code} {count} {name}\n发送后会立即保存。"
+      );
     }
 
     if (query.data === "admin_check_dav") {
@@ -689,7 +750,7 @@ bot.on("callback_query", async query => {
 
 bot.onText(/^\/start$/, async msg => {
   await bot.sendMessage(msg.chat.id,
-    fillText(WELCOME_TEXT, { bot: BOT_NAME }),
+    fillText(await getBotText("welcome"), { bot: BOT_NAME }),
     menu(isAdmin(msg))
   );
 });
@@ -801,7 +862,18 @@ bot.on("message", async msg => {
     if (msg.text === "📤 上传资源") {
       return bot.sendMessage(
         msg.chat.id,
-        fillText(UPLOAD_HINT_TEXT, { bot: BOT_NAME })
+        fillText(await getBotText("upload_hint"), { bot: BOT_NAME })
+      );
+    }
+
+    const textEditKey = "text_edit_wait_" + msg.from?.id;
+    const editingTextKey = isAdmin(msg) ? await getSetting(textEditKey) : "";
+    if (editingTextKey) {
+      await setSetting("text_" + editingTextKey, msg.text || "");
+      await setSetting(textEditKey, "");
+      return bot.sendMessage(
+        msg.chat.id,
+        "✅ 文案已保存\n\n以后机器人会直接使用你刚刚设置的内容。"
       );
     }
 
@@ -867,7 +939,7 @@ bot.on("message", async msg => {
         if (!batchPromptMessages.has(key)) {
           const promptMsg = await bot.sendMessage(
             msg.chat.id,
-            fillText(BATCH_PROMPT_TEXT, { code: batchCode, count: list.length, bot: BOT_NAME }),
+            fillText(await getBotText("batch_prompt"), { code: batchCode, count: list.length, bot: BOT_NAME }),
             {
               reply_markup: {
                 inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
