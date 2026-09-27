@@ -30,6 +30,7 @@ const admins = new Set(
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+let BOT_USERNAME = "";
 
 function isAdmin(msg) {
   const id = String(msg.from?.id || "");
@@ -493,15 +494,19 @@ bot.on("message", async msg => {
         "📄 文件　" + r.fileName + "\n" +
         "🔑 取件码　" + r.code + "\n\n" +
         "请保存好这个取件码。\n" +
-        "需要资源时，直接把取件码发送给机器人即可。"
+        "获取资源时，可直接发送取件码或包含取件码的文字。\n" +
+        (BOT_USERNAME ? "📲 机器人：@" + BOT_USERNAME : "")
       );
     }
 
-    if (msg.text && /^[A-Za-z0-9]{6}$/.test(msg.text.trim())) {
-      const r = await findResource(msg.text.trim());
-      if (!r) return bot.sendMessage(msg.chat.id, "🔎 未找到对应资源\n\n请检查取件码是否正确，或资源可能已经失效。");
-      await bot.sendMessage(msg.chat.id, "⏳ 正在准备资源…\n\n📄 " + r.file_name + "\n🔑 取件码 " + r.code + "\n\n请稍候，文件马上发送给你。");
-      await sendResource(msg.chat.id, r);
+    if (msg.text) {
+      const match = msg.text.match(/(?<![A-Za-z0-9])[A-HJ-NP-Z2-9]{6}(?![A-Za-z0-9])/i);
+      if (match) {
+        const r = await findResource(match[0]);
+        if (!r) return;
+        await bot.sendMessage(msg.chat.id, "⏳ 正在准备资源…\n\n📄 " + r.file_name + "\n🔑 取件码 " + r.code + "\n\n请稍候，文件马上发送给你。");
+        await sendResource(msg.chat.id, r);
+      }
     }
   } catch (e) {
     const status = e?.response?.status;
@@ -534,7 +539,8 @@ bot.on("message", async msg => {
 });
 
 async function startup() {
-  await bot.getMe();
+  const me = await bot.getMe();
+  BOT_USERNAME = me?.username || "";
   console.log("Bot started successfully");
   console.log("Bot name:", BOT_NAME);
   console.log("Supabase: configured");
