@@ -348,7 +348,6 @@ async function copyBatchToRelay(fromChatId, relayChatId, messageIds) {
 async function batchInsertResources(msg, items) {
   const rows = items.map(item => ({
     code: item.code,
-    sort_order: item.sortOrder,
     file_name: item.fileName,
     cloud_path: item.cloudPath,
     file_size: item.size || 0,
@@ -438,7 +437,7 @@ async function finalizePendingUploads(msg) {
 
 async function findResources(c) {
   const { data, error } = await db.from("resources")
-    .select("*").eq("code", c.toUpperCase()).eq("status", "active").order("sort_order", { ascending: true }).order("id", { ascending: true });
+    .select("*").eq("code", c.toUpperCase()).eq("status", "active").order("id", { ascending: true });
   if (error) throw error;
   return data || [];
 }
