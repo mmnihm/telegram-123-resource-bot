@@ -278,18 +278,18 @@ async function buildAdminPanel() {
 
   return {
     text:
-      "🛠 管理中心\\n\\n" +
-      "☁️ 123云盘：" + davIcon + " " + dav.status + "\\n" +
-      "📁 仓库目录：" + DAV_ROOT + "\\n" +
-      (dav.detail ? "   " + dav.detail + "\\n" : "") +
-      "\\n" +
-      "🗄️ 数据库：" + dbIcon + " " + supa.status + "\\n" +
-      (supa.ok ? "📦 有效资源：" + supa.count + "\\n" : "   " + (supa.detail || "") + "\\n") +
-      "📥 总下载：" + downloads + "\\n\\n" +
-      "🔑 用户无需点击取件按钮，直接发送 6 位取件码即可。\\n\\n" +
-      "可用命令：\\n" +
-      "/search 关键词\\n" +
-      "/delete 取件码\\n" +
+      "🛠 管理中心\n\n" +
+      "☁️ 123云盘：" + davIcon + " " + dav.status + "\n" +
+      "📁 仓库目录：" + DAV_ROOT + "\n" +
+      (dav.detail ? "   " + dav.detail + "\n" : "") +
+      "\n" +
+      "🗄️ 数据库：" + dbIcon + " " + supa.status + "\n" +
+      (supa.ok ? "📦 有效资源：" + supa.count + "\n" : "   " + (supa.detail || "") + "\n") +
+      "📥 总下载：" + downloads + "\n\n" +
+      "🔑 用户无需点击取件按钮，直接发送 6 位取件码即可。\n\n" +
+      "可用命令：\n" +
+      "/search 关键词\n" +
+      "/delete 取件码\n" +
       "/resource 取件码",
     keyboard: {
       inline_keyboard: [
@@ -327,9 +327,9 @@ bot.on("callback_query", async query => {
       await bot.answerCallbackQuery(query.id, { text: dav.status });
       return bot.sendMessage(
         msg.chat.id,
-        "☁️ 123云盘检测\\n\\n" +
-        (dav.ok ? "🟢 " : "🔴 ") + dav.status + "\\n" +
-        "📁 仓库目录：" + DAV_ROOT + "\\n" +
+        "☁️ 123云盘检测\n\n" +
+        (dav.ok ? "🟢 " : "🔴 ") + dav.status + "\n" +
+        "📁 仓库目录：" + DAV_ROOT + "\n" +
         "ℹ️ " + dav.detail
       );
     }
@@ -339,8 +339,8 @@ bot.on("callback_query", async query => {
       await bot.answerCallbackQuery(query.id, { text: supa.status });
       return bot.sendMessage(
         msg.chat.id,
-        "🗄️ Supabase 检测\\n\\n" +
-        (supa.ok ? "🟢 " : "🔴 ") + supa.status + "\\n" +
+        "🗄️ Supabase 检测\n\n" +
+        (supa.ok ? "🟢 " : "🔴 ") + supa.status + "\n" +
         (supa.ok ? "📦 资源数量：" + supa.count : "ℹ️ " + supa.detail)
       );
     }
