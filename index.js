@@ -195,7 +195,10 @@ async function sendResource(chatId, resource) {
   });
 
   await bot.sendDocument(chatId, response.data, {
-    caption: "🔑 取件码：" + resource.code + "\n📄 " + resource.file_name
+    caption: "📦 资源取件成功\n\n" +
+    "📄 " + resource.file_name + "\n" +
+    "🔑 取件码　" + resource.code + "\n\n" +
+    "感谢使用。"
   }, {
     filename: resource.file_name,
     contentType: response.headers["content-type"] || "application/octet-stream"
@@ -279,26 +282,29 @@ async function buildAdminPanel() {
   return {
     text:
       "🛠 管理中心\n\n" +
-      "☁️ 123云盘：" + davIcon + " " + dav.status + "\n" +
-      "📁 仓库目录：" + DAV_ROOT + "\n" +
-      (dav.detail ? "   " + dav.detail + "\n" : "") +
+      "☁️ 云盘状态\n" +
+      davIcon + " 123 云盘　" + dav.status + "\n" +
+      "📁 仓库目录　" + DAV_ROOT + "\n" +
+      (dav.detail && !dav.ok ? "💡 " + dav.detail + "\n" : "") +
       "\n" +
-      "🗄️ 数据库：" + dbIcon + " " + supa.status + "\n" +
-      (supa.ok ? "📦 有效资源：" + supa.count + "\n" : "   " + (supa.detail || "") + "\n") +
-      "📥 总下载：" + downloads + "\n\n" +
-      "🔑 用户无需点击取件按钮，直接发送 6 位取件码即可。\n\n" +
-      "可用命令：\n" +
-      "/search 关键词\n" +
-      "/delete 取件码\n" +
-      "/resource 取件码",
+      "🗄️ 数据库状态\n" +
+      dbIcon + " Supabase　" + supa.status + "\n" +
+      (supa.ok ? "📦 有效资源　" + supa.count + "\n" : "💡 请检查数据库配置\n") +
+      "📥 总下载　　" + downloads + "\n\n" +
+      "⚡ 用户操作\n" +
+      "发送 6 位取件码，即可直接取回资源。\n\n" +
+      "⚙️ 管理命令\n" +
+      "/search　搜索资源\n" +
+      "/resource　查看资源\n" +
+      "/delete　删除资源",
     keyboard: {
       inline_keyboard: [
         [
-          { text: "🔄 检测云盘", callback_data: "admin_check_dav" },
-          { text: "🔄 检测数据库", callback_data: "admin_check_db" }
+          { text: "☁️ 检测云盘", callback_data: "admin_check_dav" },
+          { text: "🗄️ 检测数据库", callback_data: "admin_check_db" }
         ],
         [
-          { text: "♻️ 刷新管理中心", callback_data: "admin_refresh" }
+          { text: "🔄 刷新管理中心", callback_data: "admin_refresh" }
         ]
       ]
     }
@@ -317,7 +323,7 @@ bot.on("callback_query", async query => {
     const msg = query.message;
     if (!msg || !isAdmin({ from: query.from })) {
       return bot.answerCallbackQuery(query.id, {
-        text: "⛔ 无管理员权限",
+        text: "⛔ 暂无管理权限\n\n该功能仅限管理员使用。",
         show_alert: true
       });
     }
@@ -327,10 +333,10 @@ bot.on("callback_query", async query => {
       await bot.answerCallbackQuery(query.id, { text: dav.status });
       return bot.sendMessage(
         msg.chat.id,
-        "☁️ 123云盘检测\n\n" +
-        (dav.ok ? "🟢 " : "🔴 ") + dav.status + "\n" +
-        "📁 仓库目录：" + DAV_ROOT + "\n" +
-        "ℹ️ " + dav.detail
+        "☁️ 云盘检测结果\n\n" +
+        (dav.ok ? "🟢 连接正常" : "🔴 " + dav.status) + "\n" +
+        "📁 仓库目录　" + DAV_ROOT + "\n" +
+        "💡 " + dav.detail
       );
     }
 
@@ -339,9 +345,9 @@ bot.on("callback_query", async query => {
       await bot.answerCallbackQuery(query.id, { text: supa.status });
       return bot.sendMessage(
         msg.chat.id,
-        "🗄️ Supabase 检测\n\n" +
-        (supa.ok ? "🟢 " : "🔴 ") + supa.status + "\n" +
-        (supa.ok ? "📦 资源数量：" + supa.count : "ℹ️ " + supa.detail)
+        "🗄️ 数据库检测结果\n\n" +
+        (supa.ok ? "🟢 数据库正常" : "🔴 连接异常") + "\n" +
+        (supa.ok ? "📦 资源数量　" + supa.count : "💡 请检查 Supabase 配置")
       );
     }
 
@@ -367,8 +373,11 @@ bot.on("callback_query", async query => {
 bot.onText(/^\/start$/, async msg => {
   await bot.sendMessage(msg.chat.id,
     "👋 欢迎使用 " + BOT_NAME + "\n\n" +
-    "📤 直接发送文件，机器人会保存到 123 云盘并生成取件码。\n" +
-    "🔑 发送取件码即可取回资源。",
+    "📤 发送文件\n" +
+    "自动保存至 123 云盘，并生成专属取件码。\n\n" +
+    "🔑 获取资源\n" +
+    "直接发送 6 位取件码，即可取回对应资源。\n\n" +
+    "💡 无需输入命令，发送文件或取件码即可。",
     menu(isAdmin(msg))
   );
 });
@@ -379,7 +388,7 @@ bot.onText(/^\/admin$/, async msg => {
     await adminStats(msg.chat.id);
   } catch (e) {
     console.error("ADMIN ERROR:", e);
-    await bot.sendMessage(msg.chat.id, "❌ 管理中心暂时不可用，请检查 Supabase 配置。");
+    await bot.sendMessage(msg.chat.id, "⚠️ 管理中心暂时无法加载\n\n请检查 Supabase 数据库配置后重试。");
   }
 });
 
@@ -387,15 +396,15 @@ bot.onText(/^\/resource\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
   if (!isAdmin(msg)) return;
   try {
     const r = await findResource(m[1]);
-    if (!r) return bot.sendMessage(msg.chat.id, "❌ 未找到资源");
+    if (!r) return bot.sendMessage(msg.chat.id, "🔎 没有找到这条资源\n\n请检查取件码是否正确。");
     await bot.sendMessage(msg.chat.id,
       "📦 资源详情\n\n" +
-      "🔑 取件码：" + r.code + "\n" +
-      "📄 文件：" + r.file_name + "\n" +
-      "📏 大小：" + r.file_size + "\n" +
-      "📥 下载：" + r.downloads + "\n" +
-      "📌 状态：" + r.status + "\n" +
-      "🕒 创建：" + r.created_at
+      "📄 文件　" + r.file_name + "\n" +
+      "🔑 取件码　" + r.code + "\n" +
+      "📏 文件大小　" + r.file_size + "\n" +
+      "📥 下载次数　" + r.downloads + "\n" +
+      "📌 当前状态　" + r.status + "\n" +
+      "🕒 创建时间　" + r.created_at
     );
   } catch (e) {
     console.error("RESOURCE ERROR:", e);
@@ -412,10 +421,16 @@ bot.onText(/^\/search\s+(.+)$/i, async (msg, m) => {
       .or("code.ilike.%" + q + "%,file_name.ilike.%" + q + "%")
       .order("created_at", { ascending: false }).limit(20);
     if (error) throw error;
-    if (!data?.length) return bot.sendMessage(msg.chat.id, "🔎 没有找到资源");
+    if (!data?.length) return bot.sendMessage(msg.chat.id, "🔎 暂无相关资源\n\n换个关键词试试。");
     await bot.sendMessage(msg.chat.id,
-      "🔎 搜索：" + q + "\n\n" +
-      data.map((r, i) => (i + 1) + ". " + r.code + " · " + r.file_name + " · 下载 " + r.downloads).join("\n")
+      "🔎 搜索结果\n\n" +
+      "关键词：" + q + "\n" +
+      "共找到 " + data.length + " 条资源\n\n" +
+      data.map((r, i) =>
+        "「" + r.code + "」\n" +
+        "📄 " + r.file_name + "\n" +
+        "📥 下载 " + r.downloads + " 次"
+      ).join("\n\n")
     );
   } catch (e) {
     console.error("SEARCH ERROR:", e);
@@ -430,7 +445,9 @@ bot.onText(/^\/delete\s+([A-Za-z0-9]+)$/i, async (msg, m) => {
     if (!r) return bot.sendMessage(msg.chat.id, "❌ 未找到资源");
     try { await deleteFromDav(r.cloud_path); } catch (_) {}
     await db.from("resources").update({ status: "deleted" }).eq("id", r.id);
-    await bot.sendMessage(msg.chat.id, "🗑 已删除：" + r.code);
+    await bot.sendMessage(msg.chat.id, "🗑 资源已删除\n\n" +
+      "🔑 取件码　" + r.code + "\n" +
+      "📄 文件　" + r.file_name);
   } catch (e) {
     console.error("DELETE ERROR:", e);
     await bot.sendMessage(msg.chat.id, "❌ 删除失败，请检查配置。");
@@ -443,10 +460,12 @@ bot.on("message", async msg => {
   try {
     if (msg.text === "📖 使用说明") {
       return bot.sendMessage(msg.chat.id,
-        "📖 使用方法\n\n" +
-        "1️⃣ 发送文件 → 自动保存到 123 云盘\n" +
-        "2️⃣ 获取 6 位取件码\n" +
-        "3️⃣ 把取件码发送给机器人 → 自动取回文件"
+        "📖 使用说明\n\n" +
+        "📤 存入资源\n" +
+        "直接发送文件，机器人会自动保存。\n\n" +
+        "🔑 获取资源\n" +
+        "发送 6 位取件码，即可自动取回。\n\n" +
+        "💡 全程无需输入命令，直接发送即可。"
       );
     }
 
@@ -456,31 +475,32 @@ bot.on("message", async msg => {
     }
 
     if (msg.text === "📤 上传资源") {
-      return bot.sendMessage(msg.chat.id, "📤 请直接发送文件给我。");
+      return bot.sendMessage(msg.chat.id, "📤 请发送文件\n\n收到后会自动保存，并返回 6 位取件码。");
     }
 
     const info = await getFileInfo(msg);
     if (info) {
       if (!davConfigured()) {
         return bot.sendMessage(msg.chat.id,
-          "⚠️ 123 云盘 WebDAV 还没有配置完成。\n\n请先在 Render 环境变量中填写：\nDAV_URL\nDAV_USERNAME\nDAV_PASSWORD"
+          "⚠️ 存储服务尚未配置完成\n\n当前无法保存资源，请联系管理员检查 123 云盘 WebDAV 配置。"
         );
       }
 
-      await bot.sendMessage(msg.chat.id, "⏳ 正在保存资源，请稍候...");
+      await bot.sendMessage(msg.chat.id, "⏳ 正在保存资源…\n\n请稍候，文件上传完成后会自动生成取件码。");
       const r = await saveResource(msg);
       return bot.sendMessage(msg.chat.id,
-        "✅ 保存成功\n\n" +
-        "📄 " + r.fileName + "\n" +
-        "🔑 取件码：" + r.code + "\n\n" +
-        "把这个取件码发送给机器人即可取回。"
+        "✅ 资源保存成功\n\n" +
+        "📄 文件　" + r.fileName + "\n" +
+        "🔑 取件码　" + r.code + "\n\n" +
+        "请保存好这个取件码。\n" +
+        "需要资源时，直接把取件码发送给机器人即可。"
       );
     }
 
     if (msg.text && /^[A-Za-z0-9]{6}$/.test(msg.text.trim())) {
       const r = await findResource(msg.text.trim());
-      if (!r) return bot.sendMessage(msg.chat.id, "❌ 取件码不存在或资源已失效。");
-      await bot.sendMessage(msg.chat.id, "⏳ 正在取回：" + r.file_name);
+      if (!r) return bot.sendMessage(msg.chat.id, "🔎 未找到对应资源\n\n请检查取件码是否正确，或资源可能已经失效。");
+      await bot.sendMessage(msg.chat.id, "⏳ 正在准备资源…\n\n📄 " + r.file_name + "\n🔑 取件码 " + r.code + "\n\n请稍候，文件马上发送给你。");
       await sendResource(msg.chat.id, r);
     }
   } catch (e) {
@@ -494,20 +514,22 @@ bot.on("message", async msg => {
 
     let reason = "服务暂时异常";
     if (!davConfigured()) {
-      reason = "123 云盘 WebDAV 尚未配置";
+      reason = "存储服务尚未配置";
     } else if (status === 401 || status === 403) {
-      reason = "123 云盘 WebDAV 账号或密码不正确";
+      reason = "存储服务认证失败";
     } else if (status === 404) {
-      reason = "123 云盘中找不到对应文件";
+      reason = "资源文件暂时无法找到";
     } else if (status >= 500) {
-      reason = "123 云盘 WebDAV 暂时无法连接";
+      reason = "存储服务暂时无法连接";
     } else if (e?.message?.includes("Supabase")) {
-      reason = "数据库暂时无法连接";
+      reason = "数据库服务暂时无法连接";
     } else if (e?.message) {
-      reason = e.message.slice(0, 120);
+      reason = "服务器暂时出现异常";
     }
 
-    await bot.sendMessage(msg.chat.id, "❌ 操作失败\n\n原因：" + reason + "\n\n请稍后重试；如果持续出现，请检查 Render 日志。");
+    await bot.sendMessage(msg.chat.id, "⚠️ 操作未完成\n\n" +
+      "原因：" + reason + "\n\n" +
+      "请稍后再试。若问题持续，请联系管理员。);
   }
 });
 
