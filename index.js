@@ -16,6 +16,20 @@ const {
   BOT_NAME = "资源取件机器人"
 } = process.env;
 
+// ==================== 用户文案设置 ====================
+const WELCOME_TEXT = `👋 欢迎使用 {bot}\n\n📤 上传资源\n可连续发送多个文件，全部发送完成后点击「✅ 完成上传」。\n\n🔑 获取资源\n一个取件码对应一整批文件，发送取件码即可全部取回。\n\n💡 无需输入命令，发送文件或取件码即可。`;
+const UPLOAD_HINT_TEXT = `📤 请连续发送文件\n\n文件会自动加入当前批次。\n发送完后，在批次提示下方点击「✅ 完成上传」即可生成取件码。`;
+const BATCH_PROMPT_TEXT = `📦 批次上传中\n\n🔑 取件码　{code}\n📦 当前文件　{count} 个\n\n继续发送文件，全部发送完成后点击下面按钮。\n⚡ 完成后会整批转入中转仓、整批入库。`;
+const PICKUP_CODE_TEXT = `📦 批量入库完成\n\n📦 文件数量　{count} 个\n⏳ 正在上传　后台处理\n🔑 取件码　　{code}\n\n这一批文件已经使用同一个取件码。\n123 云盘上传完成后即可正常取件。`;
+const PICKUP_SUCCESS_TEXT = `📦 资源取件成功\n\n📄 {name}\n🔑 取件码　{code}\n\n感谢使用。`;
+
+function fillText(template, vars = {}) {
+  return String(template).replace(/\{(\w+)\}/g, (_, key) =>
+    vars[key] !== undefined ? String(vars[key]) : ""
+  );
+}
+
+
 function required(name, value) {
   if (!value) throw new Error("缺少环境变量: " + name);
 }
@@ -403,10 +417,7 @@ async function sendResource(chatId, resource) {
     timeout: 120000
   });
   await bot.sendDocument(chatId, response.data, {
-    caption: "📦 资源取件成功\n\n" +
-      "📄 " + resource.file_name + "\n" +
-      "🔑 取件码　" + resource.code + "\n\n" +
-      "感谢使用。"
+    caption: fillText(PICKUP_SUCCESS_TEXT, { name: resource.file_name, code: resource.code, bot: BOT_NAME })
   }, {
     filename: resource.file_name,
     contentType: response.headers["content-type"] || "application/octet-stream"
@@ -558,12 +569,7 @@ bot.on("callback_query", async query => {
 
     await bot.answerCallbackQuery(query.id, { text: "整批已入库，后台上传中" });
     return bot.editMessageText(
-      "📦 批量入库完成\n\n" +
-      "📦 文件数量　" + count + " 个\n" +
-      "⏳ 正在上传　后台处理\n" +
-      "🔑 取件码　　" + batch.code + "\n\n" +
-      "这一批文件已经使用同一个取件码。\n" +
-      "123 云盘上传完成后即可正常取件。",
+      fillText(PICKUP_CODE_TEXT, { count, code: batch.code, bot: BOT_NAME }),
       {
         chat_id: msg.chat.id,
         message_id: msg.message_id
@@ -644,12 +650,7 @@ bot.on("callback_query", async query => {
 
 bot.onText(/^\/start$/, async msg => {
   await bot.sendMessage(msg.chat.id,
-    "👋 欢迎使用 " + BOT_NAME + "\n\n" +
-    "📤 上传资源\n" +
-    "可连续发送多个文件，全部发送完成后点击「✅ 完成上传」。\n\n" +
-    "🔑 获取资源\n" +
-    "一个取件码对应一整批文件，发送取件码即可全部取回。\n\n" +
-    "💡 无需输入命令，发送文件或取件码即可。",
+    fillText(WELCOME_TEXT, { bot: BOT_NAME }),
     menu(isAdmin(msg))
   );
 });
@@ -761,9 +762,7 @@ bot.on("message", async msg => {
     if (msg.text === "📤 上传资源") {
       return bot.sendMessage(
         msg.chat.id,
-        "📤 请连续发送文件\n\n" +
-        "文件会自动加入当前批次。\n" +
-        "发送完后，在批次提示下方点击「✅ 完成上传」即可生成取件码。"
+        fillText(UPLOAD_HINT_TEXT, { bot: BOT_NAME })
       );
     }
 
@@ -829,11 +828,7 @@ bot.on("message", async msg => {
         if (!batchPromptMessages.has(key)) {
           const promptMsg = await bot.sendMessage(
             msg.chat.id,
-            "📦 批次上传中\n\n" +
-            "🔑 取件码　" + batchCode + "\n" +
-            "📦 当前文件　" + list.length + " 个\n\n" +
-            "继续发送文件，全部发送完成后点击下面按钮。\n" +
-            "⚡ 完成后会整批转入中转仓、整批入库。",
+            fillText(BATCH_PROMPT_TEXT, { code: batchCode, count: list.length, bot: BOT_NAME }),
             {
               reply_markup: {
                 inline_keyboard: [[{ text: "✅ 完成上传", callback_data: "finish_upload" }]]
