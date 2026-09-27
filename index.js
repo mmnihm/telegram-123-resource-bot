@@ -649,7 +649,17 @@ bot.on("message", async msg => {
           "⚠️ 没有识别到来源群/频道。\n\n请把中转群或频道中的任意一条消息直接转发给我。"
         );
       }
-      await setSetting("relay_chat_id", relayId);
+      try {
+        await setSetting("relay_chat_id", relayId);
+      } catch (e) {
+        console.error("RELAY BIND SAVE ERROR:", e);
+        return bot.sendMessage(
+          msg.chat.id,
+          "❌ 中转仓识别成功，但保存失败。\n\n" +
+          "请先在 Supabase SQL Editor 执行项目里的 supabase/schema.sql，" +
+          "确保已创建 bot_settings 表，然后重新点击「📦 绑定中转仓」。"
+        );
+      }
       relayBindWait.delete(String(msg.from.id));
       return bot.sendMessage(
         msg.chat.id,
