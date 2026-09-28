@@ -354,6 +354,8 @@ async function copyBatchToRelay(fromChatId, relayChatId, messageIds) {
 async function batchInsertResources(msg, items) {
   const rows = items.map(item => ({
     code: item.code,
+    relay_chat_id: item.relayChatId || "",
+    relay_message_id: item.relayMessageId || null,
     file_name: item.fileName,
     cloud_path: item.cloudPath,
     file_size: item.size || 0,
@@ -417,11 +419,14 @@ async function finalizePendingUploads(msg) {
   });
 
   // 中转完成后，整个批次一次性写入 Supabase。
-  const inserted = await batchInsertResources(msg, pendingItems);
+  orderedItems.forEach(item => {
+    item.relayChatId = String(relayChatId);
+  });
 
-  // 入库后再统一进入后台上传队列。
+  const inserted = await batchInsertResources(msg, orderedItems);
+
   const uploadJobs = inserted.map((resource, index) =>
-    uploadRelayResource(pendingItems[index], resource.id)
+    uploadRelayResource(orderedItems[index], resource.id)
   );
 
   Promise.allSettled(uploadJobs).then(async results => {
@@ -457,7 +462,7 @@ async function findResources(c) {
   const { data, error } = await db.from("resources")
     .select("*")
     .eq("code", c.toUpperCase())
-    .in("status", ["uploading", "active"])
+    .neq("status", "deleted")
     .order("id", { ascending: true });
   if (error) throw error;
   return data || [];
@@ -514,10 +519,42 @@ async function sendResource(chatId, resource) {
   });
 }
 
-async function sendResourceBatch(chatId, resources) {
+async function sendRelayResourceBatch(chatId, resources) {
+  const groups = new Map();
+
   for (const resource of resources) {
-    await sendResource(chatId, resource);
-    await db.from("resources").update({ downloads: (resource.downloads || 0) + 1 }).eq("id", resource.id);
+    const relayChatId = String(resource.relay_chat_id || "");
+    const relayMessageId = Number(resource.relay_message_id || 0);
+    if (!relayChatId || !relayMessageId) {
+      throw new Error("数据库缺少中转仓消息记录，无法直接取件");
+    }
+    if (!groups.has(relayChatId)) groups.set(relayChatId, []);
+    groups.get(relayChatId).push(resource);
+  }
+
+  for (const [relayChatId, group] of groups) {
+    group.sort((a, b) => Number(a.relay_message_id) - Number(b.relay_message_id));
+    for (let i = 0; i < group.length; i += 100) {
+      const chunk = group.slice(i, i + 100);
+      const response = await axios.post(
+        "https://api.telegram.org/bot" + BOT_TOKEN + "/copyMessages",
+        {
+          chat_id: chatId,
+          from_chat_id: relayChatId,
+          message_ids: chunk.map(x => Number(x.relay_message_id))
+        },
+        { timeout: 30000 }
+      );
+      if (!response.data?.ok) {
+        throw new Error("Telegram 取件失败：" + (response.data?.description || "未知 Telegram 错误"));
+      }
+    }
+  }
+
+  for (const resource of resources) {
+    await db.from("resources")
+      .update({ downloads: (resource.downloads || 0) + 1 })
+      .eq("id", resource.id);
   }
 }
 
@@ -1084,37 +1121,19 @@ bot.on("message", async msg => {
           return bot.sendMessage(msg.chat.id, "❌ 未找到对应资源\n\n请检查取件码是否正确。");
         }
 
-        const uploadingCount = items.filter(x => x.status === "uploading").length;
-        if (uploadingCount) {
-          await bot.sendMessage(
-            msg.chat.id,
-            "⏳ 资源正在上传云盘…\n\n" +
-            "📦 共 " + items.length + " 个文件\n" +
-            "☁️ 待处理 " + uploadingCount + " 个\n\n" +
-            "请稍候，上传完成后会自动继续发送。"
-          );
-        } else {
-          await bot.sendMessage(
-            msg.chat.id,
-            "📦 正在发送资源…\n\n共 " + items.length + " 个文件，请稍候。"
-          );
-        }
+        await bot.sendMessage(
+          msg.chat.id,
+          "📦 正在发送资源…\n\n共 " + items.length + " 个文件，请稍候。"
+        );
 
         try {
-          const readyItems = await waitForResourcesReady(match[0]);
-          if (!readyItems.length) {
-            return bot.sendMessage(
-              msg.chat.id,
-              "❌ 资源暂时不可用\n\n请稍后重新输入取件码。"
-            );
-          }
-          await sendResourceBatch(msg.chat.id, readyItems);
+          await sendRelayResourceBatch(msg.chat.id, items);
         } catch (e) {
           console.error("SEND RESOURCE ERROR:", e);
           return bot.sendMessage(
             msg.chat.id,
             "❌ 资源发送失败\n\n" +
-            (e?.message || "请联系管理员检查云盘连接。").slice(0, 180)
+            (e?.message || "请检查中转仓和机器人权限。").slice(0, 180)
           );
         }
         return;
