@@ -146,7 +146,18 @@ function historyMediaInfo(message) {
   return { fileName: safeName(fileName), size };
 }
 
-async function getScannerClient() {
+const SCANNER_CONNECT_TIMEOUT_MS = 30000;
+const SCANNER_ENTITY_TIMEOUT_MS = 20000;
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function getScannerClient(statusCallback) {
   if (!scannerConfigured()) {
     throw new Error("历史扫描账号尚未配置 TELEGRAM_API_ID、TELEGRAM_API_HASH、TELEGRAM_SESSION");
   }
@@ -163,11 +174,24 @@ async function getScannerClient() {
     { connectionRetries: 5 }
   );
 
-  await client.connect();
-  if (!(await client.checkAuthorization())) {
-    throw new Error("TELEGRAM_SESSION 无效或已失效");
+  try {
+    if (statusCallback) await statusCallback("🔌 正在连接 Telegram 扫描账号……");
+    await withTimeout(
+      client.connect(),
+      SCANNER_CONNECT_TIMEOUT_MS,
+      "Telegram 扫描账号连接超时（30 秒），请检查 Render 网络或扫描账号连接状态。"
+    );
+
+    if (!(await client.checkAuthorization())) {
+      throw new Error("TELEGRAM_SESSION 无效或已失效");
+    }
+
+    if (statusCallback) await statusCallback("🟢 Telegram 扫描账号已连接，正在识别资源仓库……");
+    return client;
+  } catch (e) {
+    try { await client.disconnect(); } catch (_) {}
+    throw e;
   }
-  return client;
 }
 
 async function scanRelayHistory(chatId, adminChatId) {
@@ -183,9 +207,33 @@ async function scanRelayHistory(chatId, adminChatId) {
   let skipped = 0;
 
   try {
-    client = await getScannerClient();
+    client = await getScannerClient(async text => {
+      await bot.sendMessage(adminChatId, text);
+    });
 
-    const cursorKey = "history_scan_cursor_" + String(chatId);
+    const relayId = String(chatId || "").trim();
+    const numericRelayId = Number(relayId);
+    if (!Number.isSafeInteger(numericRelayId) || !numericRelayId) {
+      throw new Error("资源仓库 ID 无效：" + relayId);
+    }
+
+    // 保持原来的仓库匹配目标不变：仍然使用已绑定的 relay_chat_id。
+    // 这里只把数据库中的字符串 ID 转成 Telegram/GramJS 可识别的整数实体，
+    // 避免把 "-100..." 字符串误当成用户名处理。
+    const relayEntity = await withTimeout(
+      client.getEntity(numericRelayId),
+      SCANNER_ENTITY_TIMEOUT_MS,
+      "资源仓库识别超时（20 秒），请确认扫描账号已经加入并打开该仓库。"
+    );
+
+    await bot.sendMessage(
+      adminChatId,
+      "✅ 资源仓库识别成功\n\n" +
+      "📦 仓库 ID：" + relayId + "\n" +
+      "📌 扫描账号已确认可以访问该仓库。"
+    );
+
+    const cursorKey = "history_scan_cursor_" + relayId;
     const savedCursor = Number(await getSetting(cursorKey) || 0);
 
     await bot.sendMessage(
@@ -197,7 +245,7 @@ async function scanRelayHistory(chatId, adminChatId) {
       "⏳ 正在读取频道历史消息……"
     );
 
-    for await (const message of client.iterMessages(chatId, {
+    for await (const message of client.iterMessages(relayEntity, {
       limit: 100,
       maxId: savedCursor || undefined
     })) {
