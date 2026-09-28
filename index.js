@@ -721,6 +721,35 @@ async function findResources(c) {
     .neq("status", "deleted")
     .order("id", { ascending: true });
   if (error) throw error;
+
+  // 防止同一个中转仓消息被重复入库后，取件时发送双份文件。
+  // 唯一键：relay_chat_id + relay_message_id。
+  const unique = [];
+  const seen = new Set();
+
+  for (const item of (data || [])) {
+    const relayChatId = String(item.relay_chat_id || "");
+    const relayMessageId = Number(item.relay_message_id || 0);
+
+    if (relayChatId && relayMessageId) {
+      const key = relayChatId + ":" + relayMessageId;
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+
+    unique.push(item);
+  }
+
+  return unique;
+}
+
+async function findResources(c) {
+  const { data, error } = await db.from("resources")
+    .select("*")
+    .eq("code", c.toUpperCase())
+    .neq("status", "deleted")
+    .order("id", { ascending: true });
+  if (error) throw error;
   return data || [];
 }
 
@@ -776,9 +805,25 @@ async function sendResource(chatId, resource) {
 }
 
 async function sendRelayResourceBatch(chatId, resources) {
+  // 最终发送前再次去重，防止数据库已有重复记录或同一取件请求重复触发。
+  const uniqueResources = [];
+  const seen = new Set();
+
+  for (const resource of resources || []) {
+    const relayChatId = String(resource.relay_chat_id || "");
+    const relayMessageId = Number(resource.relay_message_id || 0);
+    const key = relayChatId && relayMessageId
+      ? relayChatId + ":" + relayMessageId
+      : "resource:" + String(resource.id);
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueResources.push(resource);
+  }
+
   const groups = new Map();
 
-  for (const resource of resources) {
+  for (const resource of uniqueResources) {
     const relayChatId = String(resource.relay_chat_id || "");
     const relayMessageId = Number(resource.relay_message_id || 0);
     if (!relayChatId || !relayMessageId) {
