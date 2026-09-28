@@ -3,6 +3,8 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
+const { TelegramClient } = require("telegram");
+const { StringSession } = require("telegram/sessions");
 
 const {
   BOT_TOKEN,
@@ -13,7 +15,10 @@ const {
   DAV_USERNAME = "",
   DAV_PASSWORD = "",
   DAV_ROOT = "/telegram-resource-bot",
-  BOT_NAME = "资源取件机器人"
+  BOT_NAME = "资源取件机器人",
+  TELEGRAM_API_ID = "",
+  TELEGRAM_API_HASH = "",
+  TELEGRAM_SESSION = ""
 } = process.env;
 
 // ==================== 用户文案设置 ====================
@@ -91,6 +96,165 @@ const batchPromptMessages = new Map();
 const activeBatchCodes = new Map();
 const relayBindWait = new Set();
 const historyScanWait = new Set();
+const historyScanRunning = new Set();
+
+function scannerConfigured() {
+  return Boolean(TELEGRAM_API_ID && TELEGRAM_API_HASH && TELEGRAM_SESSION);
+}
+
+function historyMediaInfo(message) {
+  const media = message?.media;
+  if (!media) return null;
+
+  let fileName = "";
+  let size = 0;
+
+  if (media.document) {
+    size = Number(media.document.size || 0);
+    const attrs = media.document.attributes || [];
+    const fileAttr = attrs.find(a => a?.className === "DocumentAttributeFilename");
+    fileName = fileAttr?.fileName || "";
+    if (!fileName) {
+      const mime = media.document.mimeType || "application/octet-stream";
+      fileName = "telegram_" + message.id + (mime.includes("video") ? ".mp4" : ".bin");
+    }
+  } else if (media.photo) {
+    fileName = "photo_" + message.id + ".jpg";
+  } else {
+    return null;
+  }
+
+  return { fileName: safeName(fileName), size };
+}
+
+async function getScannerClient() {
+  if (!scannerConfigured()) {
+    throw new Error("历史扫描账号尚未配置 TELEGRAM_API_ID、TELEGRAM_API_HASH、TELEGRAM_SESSION");
+  }
+
+  const apiId = Number(TELEGRAM_API_ID);
+  if (!Number.isFinite(apiId) || !apiId) {
+    throw new Error("TELEGRAM_API_ID 必须是数字");
+  }
+
+  const client = new TelegramClient(
+    new StringSession(TELEGRAM_SESSION),
+    apiId,
+    TELEGRAM_API_HASH,
+    { connectionRetries: 5 }
+  );
+
+  await client.connect();
+  if (!(await client.checkAuthorization())) {
+    throw new Error("TELEGRAM_SESSION 无效或已失效");
+  }
+  return client;
+}
+
+async function scanRelayHistory(chatId, adminChatId) {
+  const key = String(adminChatId);
+  if (historyScanRunning.has(key)) {
+    throw new Error("历史扫描已经在进行中，请不要重复启动");
+  }
+
+  historyScanRunning.add(key);
+  let client;
+  let scanned = 0;
+  let imported = 0;
+  let skipped = 0;
+
+  try {
+    client = await getScannerClient();
+
+    const cursorKey = "history_scan_cursor_" + String(chatId);
+    const savedCursor = Number(await getSetting(cursorKey) || 0);
+
+    await bot.sendMessage(
+      adminChatId,
+      "🔍 已启动自动历史扫描\n\n" +
+      "📦 中转仓：" + chatId + "\n" +
+      "📌 扫描方式：MTProto\n" +
+      (savedCursor ? "▶️ 从上次位置继续\n" : "▶️ 从最新消息开始扫描\n") +
+      "⏳ 正在读取频道历史消息……"
+    );
+
+    for await (const message of client.iterMessages(chatId, {
+      limit: 100,
+      maxId: savedCursor || undefined
+    })) {
+      scanned++;
+
+      const media = historyMediaInfo(message);
+      if (media) {
+        const { data: existing, error: existingError } = await db
+          .from("resources")
+          .select("id")
+          .eq("relay_chat_id", String(chatId))
+          .eq("relay_message_id", Number(message.id))
+          .limit(1);
+
+        if (existingError) throw existingError;
+
+        if (existing?.length) {
+          skipped++;
+        } else {
+          const cloudPath =
+            DAV_ROOT.replace(/\/g, "/").replace(/\/$/, "") +
+            "/history/telegram_" +
+            String(chatId).replace(/[^0-9-]/g, "") +
+            "/" + message.id + "_" + media.fileName;
+
+          const { error } = await db.from("resources").insert({
+            code: null,
+            resource_type: "history",
+            relay_chat_id: String(chatId),
+            relay_message_id: Number(message.id),
+            sort_order: 0,
+            file_name: media.fileName,
+            cloud_path: cloudPath,
+            file_size: media.size,
+            uploader_id: null,
+            status: "active"
+          });
+
+          if (error) throw error;
+          imported++;
+        }
+      }
+
+      await setSetting(cursorKey, String(message.id));
+
+      if (scanned % 500 === 0) {
+        await bot.sendMessage(
+          adminChatId,
+          "🔄 历史扫描进度\n\n" +
+          "📨 已扫描：" + scanned + "\n" +
+          "📄 新增资源：" + imported + "\n" +
+          "⏭️ 已存在：" + skipped + "\n" +
+          "🆔 当前消息：" + message.id
+        );
+      }
+    }
+
+    await bot.sendMessage(
+      adminChatId,
+      "✅ 历史扫描完成\n\n" +
+      "📨 扫描消息：" + scanned + "\n" +
+      "📄 新增资源：" + imported + "\n" +
+      "⏭️ 已存在：" + skipped + "\n\n" +
+      "🔑 历史资源不会生成取件码。\n" +
+      "📦 已建立频道消息索引。"
+    );
+
+    return { scanned, imported, skipped };
+  } finally {
+    historyScanRunning.delete(key);
+    if (client) {
+      try { await client.disconnect(); } catch (_) {}
+    }
+  }
+}
+
 const batchQueues = new Map();
 const batchAutoFinishTimers = new Map();
 const BATCH_AUTO_FINISH_MS = 3000;
@@ -892,18 +1056,33 @@ bot.on("callback_query", async query => {
     }
 
     if (query.data === "admin_scan_history") {
-      historyScanWait.add(String(query.from.id));
-      await bot.answerCallbackQuery(query.id, { text: "已进入历史扫描模式" });
-      return bot.sendMessage(
-        msg.chat.id,
-        "🔍 扫描历史资源\n\n" +
-        "请把中转仓里以前的文件消息直接转发给我。\n" +
-        "机器人会自动识别并上传到 123 云盘。\n\n" +
-        "📌 历史资源不会生成取件码\n" +
-        "⏭️ 已扫描过的消息会自动跳过\n" +
-        "📦 可以连续转发多条消息\n\n" +
-        "完成后发送「❌ 退出扫描」。"
-      );
+      await bot.answerCallbackQuery(query.id, { text: "正在启动自动扫描" });
+      try {
+        const relayChatId = await getRelayChatId();
+        if (!relayChatId) {
+          return bot.sendMessage(msg.chat.id, "⚠️ 尚未绑定中转仓\n\n请先绑定中转群/频道。");
+        }
+        if (!scannerConfigured()) {
+          return bot.sendMessage(
+            msg.chat.id,
+            "⚠️ 自动历史扫描还差扫描账号配置\n\n" +
+            "需要设置：\n" +
+            "TELEGRAM_API_ID\n" +
+            "TELEGRAM_API_HASH\n" +
+            "TELEGRAM_SESSION\n\n" +
+            "配置好后重新点击「🔍 扫描历史资源」。"
+          );
+        }
+        await scanRelayHistory(relayChatId, msg.chat.id);
+      } catch (e) {
+        console.error("AUTO HISTORY SCAN ERROR:", e);
+        await bot.sendMessage(
+          msg.chat.id,
+          "❌ 自动历史扫描失败\n\n" +
+          (e?.message || "未知错误").slice(0, 400)
+        );
+      }
+      return;
     }
 
     if (query.data === "admin_bind_relay") {
@@ -1058,41 +1237,6 @@ bot.on("message", async msg => {
         msg.chat.id,
         "✅ 文案已保存\n\n以后机器人会直接使用你刚刚设置的内容。"
       );
-    }
-
-    if (msg.text === "❌ 退出扫描" && isAdmin(msg)) {
-      historyScanWait.delete(String(msg.from?.id || ""));
-      return bot.sendMessage(msg.chat.id, "✅ 已退出历史扫描模式");
-    }
-
-    if (historyScanWait.has(String(msg.from?.id || "")) && isAdmin(msg)) {
-      try {
-        const result = await importHistoryResource(msg);
-        if (result.skipped) {
-          return bot.sendMessage(
-            msg.chat.id,
-            result.reason === "已存在"
-              ? "⏭️ 这个历史资源已经扫描过了，已自动跳过。"
-              : "⚠️ 这条消息不是可识别的文件，请转发文件、视频、音频或图片消息。"
-          );
-        }
-
-        return bot.sendMessage(
-          msg.chat.id,
-          "✅ 历史资源已导入\n\n" +
-          "📄 " + result.resource.file_name + "\n" +
-          "☁️ 已上传到 123 云盘\n" +
-          "🔑 不生成取件码\n\n" +
-          "可以继续转发下一条历史资源。"
-        );
-      } catch (e) {
-        console.error("HISTORY SCAN ERROR:", e);
-        return bot.sendMessage(
-          msg.chat.id,
-          "❌ 历史资源扫描失败\n\n💡 " +
-          (e?.message || "未知错误").slice(0, 220)
-        );
-      }
     }
 
     if (relayBindWait.has(String(msg.from?.id || "")) && isAdmin(msg)) {
