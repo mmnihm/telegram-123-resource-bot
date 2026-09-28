@@ -218,7 +218,7 @@ async function scanRelayHistory(chatId, adminChatId) {
           skipped++;
         } else {
           const cloudPath =
-            DAV_ROOT.replace(/\/g, "/").replace(/\/$/, "") +
+            DAV_ROOT.replace(/\\/g, "/").replace(/\/$/, "") +
             "/history/telegram_" +
             String(chatId).replace(/[^0-9-]/g, "") +
             "/" + message.id + "_" + media.fileName;
