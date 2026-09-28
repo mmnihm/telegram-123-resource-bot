@@ -455,9 +455,43 @@ async function finalizePendingUploads(msg) {
 
 async function findResources(c) {
   const { data, error } = await db.from("resources")
-    .select("*").eq("code", c.toUpperCase()).eq("status", "active").order("id", { ascending: true });
+    .select("*")
+    .eq("code", c.toUpperCase())
+    .in("status", ["uploading", "active"])
+    .order("id", { ascending: true });
   if (error) throw error;
   return data || [];
+}
+
+async function waitForResourcesReady(c, timeoutMs = 120000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const { data, error } = await db.from("resources")
+      .select("*")
+      .eq("code", c.toUpperCase())
+      .in("status", ["uploading", "active", "failed"])
+      .order("id", { ascending: true });
+
+    if (error) throw error;
+
+    const items = data || [];
+    if (!items.length) return [];
+
+    const failed = items.filter(x => x.status === "failed");
+    if (failed.length === items.length) {
+      throw new Error("123 云盘上传失败，请联系管理员检查 WebDAV 配置");
+    }
+
+    const uploading = items.filter(x => x.status === "uploading");
+    if (!uploading.length) {
+      return items.filter(x => x.status === "active");
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  throw new Error("资源仍在上传到 123 云盘，请稍后再次输入取件码");
 }
 
 async function findResource(c) {
@@ -1049,17 +1083,38 @@ bot.on("message", async msg => {
         if (!items.length) {
           return bot.sendMessage(msg.chat.id, "❌ 未找到对应资源\n\n请检查取件码是否正确。");
         }
-        await bot.sendMessage(
-          msg.chat.id,
-          "📦 正在发送资源…\n\n共 " + items.length + " 个文件，请稍候。"
-        );
+
+        const uploadingCount = items.filter(x => x.status === "uploading").length;
+        if (uploadingCount) {
+          await bot.sendMessage(
+            msg.chat.id,
+            "⏳ 资源正在上传云盘…\n\n" +
+            "📦 共 " + items.length + " 个文件\n" +
+            "☁️ 待处理 " + uploadingCount + " 个\n\n" +
+            "请稍候，上传完成后会自动继续发送。"
+          );
+        } else {
+          await bot.sendMessage(
+            msg.chat.id,
+            "📦 正在发送资源…\n\n共 " + items.length + " 个文件，请稍候。"
+          );
+        }
+
         try {
-          await sendResourceBatch(msg.chat.id, items);
+          const readyItems = await waitForResourcesReady(match[0]);
+          if (!readyItems.length) {
+            return bot.sendMessage(
+              msg.chat.id,
+              "❌ 资源暂时不可用\n\n请稍后重新输入取件码。"
+            );
+          }
+          await sendResourceBatch(msg.chat.id, readyItems);
         } catch (e) {
           console.error("SEND RESOURCE ERROR:", e);
           return bot.sendMessage(
             msg.chat.id,
-            "❌ 资源发送失败\n\n请联系管理员检查云盘连接。"
+            "❌ 资源发送失败\n\n" +
+            (e?.message || "请联系管理员检查云盘连接。").slice(0, 180)
           );
         }
         return;
