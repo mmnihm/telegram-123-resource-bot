@@ -90,6 +90,7 @@ const pendingUploads = new Map();
 const batchPromptMessages = new Map();
 const activeBatchCodes = new Map();
 const relayBindWait = new Set();
+const historyScanWait = new Set();
 const batchQueues = new Map();
 const batchAutoFinishTimers = new Map();
 const BATCH_AUTO_FINISH_MS = 3000;
@@ -131,6 +132,14 @@ function getForwardedChatId(msg) {
   if (origin?.type === "channel" && origin.chat?.id) return String(origin.chat.id);
   if (origin?.type === "chat" && origin.sender_chat?.id) return String(origin.sender_chat.id);
   return "";
+}
+
+function getForwardedMessageId(msg) {
+  if (msg.forward_from_message_id) return Number(msg.forward_from_message_id);
+  const origin = msg.forward_origin;
+  if (origin?.type === "channel" && origin.channel_post_id) return Number(origin.channel_post_id);
+  if (origin?.type === "chat" && origin.message_id) return Number(origin.message_id);
+  return 0;
 }
 
 function pendingKey(msg) {
@@ -349,6 +358,70 @@ async function copyBatchToRelay(fromChatId, relayChatId, messageIds) {
   }
 
   return copied;
+}
+
+async function importHistoryResource(msg) {
+  const sourceChatId = getForwardedChatId(msg);
+  const sourceMessageId = getForwardedMessageId(msg);
+  if (!sourceChatId || !sourceMessageId) {
+    throw new Error("无法识别原始消息，请直接转发中转仓里的文件消息");
+  }
+
+  const info = await getFileInfo(msg);
+  if (!info) {
+    return { skipped: true, reason: "不是可识别的文件" };
+  }
+
+  const { data: existing, error: existingError } = await db
+    .from("resources")
+    .select("id")
+    .eq("relay_chat_id", sourceChatId)
+    .eq("relay_message_id", sourceMessageId)
+    .limit(1);
+
+  if (existingError) throw existingError;
+  if (existing?.length) {
+    return { skipped: true, reason: "已存在" };
+  }
+
+  requireDav();
+
+  const name = safeName(info.fileName);
+  const root = DAV_ROOT.replace(/\\/g, "/").replace(/\/$/, "");
+  const cloudPath =
+    root +
+    "/history/" +
+    sourceMessageId +
+    "_" +
+    Math.random().toString(36).slice(2, 8) +
+    "_" +
+    name;
+
+  const fileUrl = await bot.getFileLink(info.fileId);
+  await uploadToDav(fileUrl, cloudPath, info.size);
+
+  const { data, error } = await db
+    .from("resources")
+    .insert({
+      code: null,
+      resource_type: "history",
+      relay_chat_id: sourceChatId,
+      relay_message_id: sourceMessageId,
+      file_name: name,
+      cloud_path: cloudPath,
+      file_size: info.size || 0,
+      uploader_id: msg.from?.id || null,
+      status: "active"
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    try { await deleteFromDav(cloudPath); } catch (_) {}
+    throw error;
+  }
+
+  return { skipped: false, resource: data };
 }
 
 async function batchInsertResources(msg, items) {
@@ -693,7 +766,11 @@ async function buildAdminPanel() {
         ],
         [
           { text: "📦 绑定中转仓", callback_data: "admin_bind_relay" },
-          { text: "✏️ 用户文案", callback_data: "admin_texts" }],
+          { text: "🔍 扫描历史资源", callback_data: "admin_scan_history" }
+        ],
+        [
+          { text: "✏️ 用户文案", callback_data: "admin_texts" }
+        ],
         [
           { text: "🔄 刷新管理中心", callback_data: "admin_refresh" }
         ]
@@ -811,6 +888,21 @@ bot.on("callback_query", async query => {
         "🗄️ 数据库检测结果\n\n" +
         (supa.ok ? "🟢 数据库正常" : "🔴 连接异常") + "\n" +
         (supa.ok ? "📦 资源数量　" + supa.count : "💡 请检查 Supabase 配置")
+      );
+    }
+
+    if (query.data === "admin_scan_history") {
+      historyScanWait.add(String(query.from.id));
+      await bot.answerCallbackQuery(query.id, { text: "已进入历史扫描模式" });
+      return bot.sendMessage(
+        msg.chat.id,
+        "🔍 扫描历史资源\n\n" +
+        "请把中转仓里以前的文件消息直接转发给我。\n" +
+        "机器人会自动识别并上传到 123 云盘。\n\n" +
+        "📌 历史资源不会生成取件码\n" +
+        "⏭️ 已扫描过的消息会自动跳过\n" +
+        "📦 可以连续转发多条消息\n\n" +
+        "完成后发送「❌ 退出扫描」。"
       );
     }
 
@@ -966,6 +1058,41 @@ bot.on("message", async msg => {
         msg.chat.id,
         "✅ 文案已保存\n\n以后机器人会直接使用你刚刚设置的内容。"
       );
+    }
+
+    if (msg.text === "❌ 退出扫描" && isAdmin(msg)) {
+      historyScanWait.delete(String(msg.from?.id || ""));
+      return bot.sendMessage(msg.chat.id, "✅ 已退出历史扫描模式");
+    }
+
+    if (historyScanWait.has(String(msg.from?.id || "")) && isAdmin(msg)) {
+      try {
+        const result = await importHistoryResource(msg);
+        if (result.skipped) {
+          return bot.sendMessage(
+            msg.chat.id,
+            result.reason === "已存在"
+              ? "⏭️ 这个历史资源已经扫描过了，已自动跳过。"
+              : "⚠️ 这条消息不是可识别的文件，请转发文件、视频、音频或图片消息。"
+          );
+        }
+
+        return bot.sendMessage(
+          msg.chat.id,
+          "✅ 历史资源已导入\n\n" +
+          "📄 " + result.resource.file_name + "\n" +
+          "☁️ 已上传到 123 云盘\n" +
+          "🔑 不生成取件码\n\n" +
+          "可以继续转发下一条历史资源。"
+        );
+      } catch (e) {
+        console.error("HISTORY SCAN ERROR:", e);
+        return bot.sendMessage(
+          msg.chat.id,
+          "❌ 历史资源扫描失败\n\n💡 " +
+          (e?.message || "未知错误").slice(0, 220)
+        );
+      }
     }
 
     if (relayBindWait.has(String(msg.from?.id || "")) && isAdmin(msg)) {
