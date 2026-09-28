@@ -1237,11 +1237,68 @@ bot.on("message", async msg => {
     }
 
     if (msg.text) {
-      const match = msg.text.match(/(?<![A-Za-z0-9])[A-HJ-NP-Z2-9]{6}(?![A-Za-z0-9])/i);
+      // 取件码统一清洗：允许用户输入小写、前后空格或附带少量文字。
+      // 取件完全依赖 Telegram 中转仓，不等待 123 云盘后台上传。
+      const match = msg.text.trim().match(/(?<![A-Za-z0-9])[A-HJ-NP-Z2-9]{6}(?![A-Za-z0-9])/i);
       if (match) {
-        const items = await findResources(match[0]);
+        const pickupCode = match[0].trim().toUpperCase();
+
+        // 入库和取件之间可能存在极短的数据库可见性延迟。
+        // 最多重试 5 次，每次间隔 800ms，避免刚生成取件码就误报“未找到”。
+        let items = [];
+        let lastError = null;
+
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            items = await findResources(pickupCode);
+            if (items.length) break;
+          } catch (e) {
+            lastError = e;
+          }
+          if (attempt < 4) {
+            await new Promise(resolve => setTimeout(resolve, 800));
+          }
+        }
+
+        if (lastError && !items.length) {
+          console.error("PICKUP LOOKUP ERROR:", lastError);
+          return bot.sendMessage(
+            msg.chat.id,
+            "❌ 取件查询失败\n\n请稍后重试。"
+          );
+        }
+
         if (!items.length) {
-          return bot.sendMessage(msg.chat.id, "❌ 未找到对应资源\n\n请检查取件码是否正确。");
+          return bot.sendMessage(
+            msg.chat.id,
+            "❌ 未找到对应资源\n\n" +
+            "取件码：" + pickupCode + "\n" +
+            "请检查取件码是否正确，或确认资源是否已经完成入库。"
+          );
+        }
+
+        // 只有明确标记为 deleted 的资源才不允许取件。
+        // uploading / active 都可以直接从 Telegram 中转仓取出。
+        const invalidItems = items.filter(item =>
+          !item.relay_chat_id || !Number(item.relay_message_id)
+        );
+
+        if (invalidItems.length) {
+          console.error(
+            "PICKUP RESOURCE RECORD INVALID:",
+            invalidItems.map(x => ({
+              id: x.id,
+              code: x.code,
+              relay_chat_id: x.relay_chat_id,
+              relay_message_id: x.relay_message_id,
+              status: x.status
+            }))
+          );
+          return bot.sendMessage(
+            msg.chat.id,
+            "⚠️ 资源已经入库，但中转仓记录不完整。\n\n" +
+            "请联系管理员检查这批资源。"
+          );
         }
 
         await bot.sendMessage(
@@ -1252,11 +1309,11 @@ bot.on("message", async msg => {
         try {
           await sendRelayResourceBatch(msg.chat.id, items);
         } catch (e) {
-          console.error("SEND RESOURCE ERROR:", e);
+          console.error("SEND RESOURCE ERROR:", e?.response?.data || e);
           return bot.sendMessage(
             msg.chat.id,
             "❌ 资源发送失败\n\n" +
-            (e?.message || "请检查中转仓和机器人权限。").slice(0, 180)
+            (e?.message || "请检查中转仓和机器人权限。").slice(0, 220)
           );
         }
         return;
