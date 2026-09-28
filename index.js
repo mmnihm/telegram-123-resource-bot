@@ -997,12 +997,8 @@ bot.on("message", async msg => {
 
     const info = await getFileInfo(msg);
     if (info) {
-      if (!davConfigured()) {
-        return bot.sendMessage(msg.chat.id,
-          "⚠️ 存储服务尚未配置完成\n\n当前无法保存资源，请联系管理员检查 123 云盘 WebDAV 配置。"
-        );
-      }
-
+      // Telegram 中转仓是主存储；123 云盘只作为后台备份。
+      // 因此即使 WebDAV 暂时不可用，也不能阻止资源进入中转仓和数据库。
       const relayChatId = await getRelayChatId();
       if (!relayConfigured(relayChatId)) {
         return bot.sendMessage(
