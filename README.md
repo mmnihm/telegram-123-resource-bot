@@ -10,6 +10,10 @@ Telegram 资源取件码机器人：**Telegram → 123 云盘 WebDAV → Supabas
 - 📥 用户发送取件码后取回文件
 - 🛠 管理员统计、搜索、查看资源、删除资源
 - 👤 ADMIN_IDS 支持 Telegram 数字 ID 或 @username
+- 🔍 MTProto 扫描 Telegram 频道/群历史消息
+- 📂 根据文件名特征自动建立历史资源文件夹
+- 🔎 用户端资源目录、关键词搜索、内联按钮
+- 📄 点击搜索结果直接从 Telegram 原仓库复制原文件，不下载到服务器
 
 ## 文件
 
@@ -17,6 +21,7 @@ Telegram 资源取件码机器人：**Telegram → 123 云盘 WebDAV → Supabas
 - `package.json`：Node.js 依赖
 - `.env.example`：环境变量模板
 - `supabase/schema.sql`：数据库表结构
+- `history-library.js`：历史资源文件夹、搜索和原文件取件模块
 
 ## Supabase
 
@@ -60,6 +65,8 @@ npm start
 
 ## 下一步
 
-先完成数据库和环境变量配置，再进行真实的 123 云盘上传/取件测试。
+先在 Supabase SQL Editor 执行最新版 `supabase/schema.sql`，再配置 MTProto 三项变量并点击「🛠 管理中心 → 🔍 扫描历史资源」。
+
+历史资源扫描只保存消息 ID、文件名、文件夹等索引，不下载历史文件；用户点击资源后，机器人通过 Telegram `copyMessage` 从原仓库直接复制给用户。
 
 > 注意：Telegram Bot API、部署平台和 123 云盘 WebDAV 各自可能存在文件大小、超时或网络限制。大文件支持需要根据实际部署环境继续优化。
