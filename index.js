@@ -38,6 +38,8 @@ const {
   DAV_PASSWORD = "",
   DAV_ROOT = "/telegram-resource-bot",
   BOT_NAME = "资源取件机器人",
+  BOT_ROLE = "main",
+  ALLOW_UPLOAD = "",
   TELEGRAM_API_ID = "",
   TELEGRAM_API_HASH = "",
   TELEGRAM_SESSION = ""
@@ -108,6 +110,20 @@ required("SUPABASE_SERVICE_ROLE_KEY", SUPABASE_SERVICE_ROLE_KEY);
 
 const admins = new Set(
   ADMIN_IDS.split(",").map(x => x.trim()).filter(Boolean)
+);
+
+// 多机器人共享同一个 Supabase 资源库。
+// main：主机器人，保留管理/扫描/上传功能。
+// child：子机器人，默认只提供目录、搜索、随机、最新、取件。
+// 子机器人只有显式设置 ALLOW_UPLOAD=true 才允许上传。
+const BOT_ROLE_NORMALIZED = String(BOT_ROLE || "main").trim().toLowerCase();
+const IS_MAIN_BOT = BOT_ROLE_NORMALIZED !== "child";
+const UPLOAD_ENABLED = IS_MAIN_BOT || String(ALLOW_UPLOAD).trim().toLowerCase() === "true";
+
+console.log(
+  "Bot role: " + (IS_MAIN_BOT ? "main" : "child") +
+  " | shared Supabase: enabled" +
+  " | upload: " + (UPLOAD_ENABLED ? "enabled" : "disabled")
 );
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -482,6 +498,8 @@ function clearPending(key) {
 }
 
 function isAdmin(msg) {
+  // 子机器人即使配置了 ADMIN_IDS，也不开放主机器人管理功能。
+  if (!IS_MAIN_BOT) return false;
   const id = String(msg.from?.id || "");
   const username = String(msg.from?.username || "");
   return admins.has(id) || (username && admins.has("@" + username));
@@ -1742,6 +1760,15 @@ bot.on("message", async msg => {
 
     const info = await getFileInfo(msg);
     if (info) {
+      if (!UPLOAD_ENABLED) {
+        return bot.sendMessage(
+          msg.chat.id,
+          "📚 当前为资源浏览机器人\n\n" +
+          "这里仅提供共享资源库的目录、搜索、随机、最新资源和取件功能。\n\n" +
+          "📤 如需上传资源，请使用主机器人。"
+        );
+      }
+
       // Telegram 中转仓是主存储；123 云盘只作为后台备份。
       // 因此即使 WebDAV 暂时不可用，也不能阻止资源进入中转仓和数据库。
       const relayChatId = await getRelayChatId();
@@ -1950,7 +1977,11 @@ bot.on("message", async msg => {
 bot.getMe()
   .then(me => {
     BOT_USERNAME = me.username || "";
-    console.log("Bot started: @" + (BOT_USERNAME || "unknown"));
+    console.log(
+      "Bot started: @" + (BOT_USERNAME || "unknown") +
+      " | role=" + (IS_MAIN_BOT ? "main" : "child") +
+      " | shared Supabase=" + SUPABASE_URL
+    );
     return ensureDavRoot();
   })
   .catch(err => {
