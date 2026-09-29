@@ -488,6 +488,10 @@ function menu(isAdminUser = false) {
       { text: "📂 资源目录" },
       { text: "🔎 搜索资源" }
     ],
+    [
+      { text: "🎲 随机获取" },
+      { text: "🆕 最新资源" }
+    ],
     [{ text: "📖 使用说明" }]
   ];
   if (isAdminUser) rows.push([{ text: "🛠 管理中心" }]);
@@ -1072,6 +1076,60 @@ async function getBotText(key) {
   return defaults[key] || "";
 }
 
+async function getLatestResources(limit = 10) {
+  const { data, error } = await db
+    .from("resources")
+    .select("*")
+    .neq("status", "deleted")
+    .not("relay_chat_id", "is", null)
+    .not("relay_message_id", "is", null)
+    .order("id", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data || [];
+}
+
+async function getRandomResources(limit = 10) {
+  // 先取最近 100 条，再在内存中随机抽取，避免依赖数据库 random() 函数。
+  const { data, error } = await db
+    .from("resources")
+    .select("*")
+    .neq("status", "deleted")
+    .not("relay_chat_id", "is", null)
+    .not("relay_message_id", "is", null)
+    .order("id", { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  const pool = [...(data || [])];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, Math.min(limit, pool.length));
+}
+
+async function sendQuickResourceList(chatId, title, resources, adminUser = false) {
+  if (!resources.length) {
+    return bot.sendMessage(
+      chatId,
+      title + "\n\n暂时没有可获取的资源。",
+      menu(adminUser)
+    );
+  }
+
+  await bot.sendMessage(
+    chatId,
+    title + "\n\n📦 共 " + resources.length + " 个资源\n📥 正在发送，请稍候……"
+  );
+  await sendRelayResourceBatch(chatId, resources);
+  return bot.sendMessage(
+    chatId,
+    "✅ 已发送完成\n\n共发送 " + resources.length + " 个资源。",
+    menu(adminUser)
+  );
+}
+
 function historyFolderToken(folder) {
   return Buffer.from(String(folder), "utf8").toString("base64url");
 }
@@ -1577,6 +1635,26 @@ bot.on("message", async msg => {
   try {
     if (msg.text === "📂 资源目录") {
       return sendHistoryDirectory(msg.chat.id);
+    }
+
+    if (msg.text === "🎲 随机获取") {
+      try {
+        const resources = await getRandomResources(10);
+        return await sendQuickResourceList(msg.chat.id, "🎲 随机获取", resources, isAdmin(msg));
+      } catch (e) {
+        console.error("RANDOM RESOURCE ERROR:", e);
+        return bot.sendMessage(msg.chat.id, "❌ 随机获取失败，请稍后重试。");
+      }
+    }
+
+    if (msg.text === "🆕 最新资源") {
+      try {
+        const resources = await getLatestResources(10);
+        return await sendQuickResourceList(msg.chat.id, "🆕 最新资源", resources, isAdmin(msg));
+      } catch (e) {
+        console.error("LATEST RESOURCE ERROR:", e);
+        return bot.sendMessage(msg.chat.id, "❌ 最新资源加载失败，请稍后重试。");
+      }
     }
 
     if (msg.text === "🔎 搜索资源") {
