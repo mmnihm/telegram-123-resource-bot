@@ -109,18 +109,7 @@ async function sendHistoryFile(bot, chatId, resource) {
     throw new Error("历史资源缺少 Telegram 原消息记录");
   }
 
-  const response = await bot._request("copyMessage", {
-    form: {
-      chat_id: chatId,
-      from_chat_id: relayChatId,
-      message_id: relayMessageId
-    }
-  });
-
-  if (!response?.ok) {
-    throw new Error(response?.description || "Telegram 原文件发送失败");
-  }
-  return response.result;
+  return bot.copyMessage(chatId, relayChatId, relayMessageId);
 }
 
 module.exports = {
