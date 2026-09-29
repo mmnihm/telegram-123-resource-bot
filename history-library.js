@@ -77,20 +77,27 @@ async function getOrCreateFolder(db, name) {
 }
 
 async function backfillHistoryFolders(db, limit = 5000) {
-  const { data, error } = await db
+  return backfillResourceFolders(db, limit, "history");
+}
+
+async function backfillResourceFolders(db, limit = 5000, resourceType = null) {
+  let query = db
     .from("resources")
-    .select("id,file_name,folder_name,folder_id")
-    .eq("resource_type", "history")
+    .select("id,file_name,folder_name,folder_id,resource_type")
     .neq("status", "deleted")
+    .is("folder_id", null)
     .order("id", { ascending: true })
     .limit(limit);
+
+  if (resourceType) query = query.eq("resource_type", resourceType);
+
+  const { data, error } = await query;
   if (error) throw error;
 
   const cache = new Map();
 
   for (const row of data || []) {
-    const next = folderFromFilename(row.file_name);
-    const name = cleanFolder(next);
+    const name = cleanFolder(folderFromFilename(row.file_name));
     let folder = cache.get(name);
 
     if (!folder) {
@@ -98,20 +105,21 @@ async function backfillHistoryFolders(db, limit = 5000) {
       cache.set(name, folder);
     }
 
-    const updates = {};
-    if ((row.folder_name || "未分类") !== name) updates.folder_name = name;
-    if (Number(row.folder_id || 0) !== Number(folder.id)) updates.folder_id = folder.id;
+    const { error: updateError } = await db
+      .from("resources")
+      .update({
+        folder_id: folder.id,
+        folder_name: name
+      })
+      .eq("id", row.id);
 
-    if (Object.keys(updates).length) {
-      const { error: updateError } = await db
-        .from("resources")
-        .update(updates)
-        .eq("id", row.id);
-      if (updateError) throw updateError;
-    }
+    if (updateError) throw updateError;
   }
 
-  return cache.size;
+  return {
+    repaired: (data || []).length,
+    folders: cache.size
+  };
 }
 
 async function listHistoryFolders(db, limit = 80) {
@@ -181,6 +189,7 @@ module.exports = {
   cleanFolder,
   getOrCreateFolder,
   backfillHistoryFolders,
+  backfillResourceFolders,
   listHistoryFolders,
   listHistoryFiles,
   searchHistoryFiles,
