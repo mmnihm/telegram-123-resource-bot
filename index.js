@@ -21,6 +21,7 @@ const {
   folderFromFilename,
   getOrCreateFolder,
   backfillHistoryFolders,
+  backfillResourceFolders,
   listHistoryFolders,
   listHistoryFiles,
   searchHistoryFiles,
@@ -761,6 +762,7 @@ async function importHistoryResource(msg) {
       resource_type: "history",
       relay_chat_id: sourceChatId,
       relay_message_id: sourceMessageId,
+      folder_id: (await getOrCreateFolder(db, folderFromFilename(name))).id,
       folder_name: folderFromFilename(name),
       file_name: name,
       cloud_path: cloudPath,
@@ -780,16 +782,33 @@ async function importHistoryResource(msg) {
 }
 
 async function batchInsertResources(msg, items) {
-  const rows = items.map(item => ({
-    code: item.code,
-    relay_chat_id: item.relayChatId || "",
-    relay_message_id: item.relayMessageId || null,
-    file_name: item.fileName,
-    cloud_path: item.cloudPath,
-    file_size: item.size || 0,
-    uploader_id: msg.from?.id || null,
-    status: "uploading"
-  }));
+  const folderCache = new Map();
+
+  const rows = [];
+  for (const item of items) {
+    const folderName = folderFromFilename(item.fileName);
+    let folder = folderCache.get(folderName);
+
+    if (!folder) {
+      folder = await getOrCreateFolder(db, folderName);
+      folderCache.set(folderName, folder);
+    }
+
+    rows.push({
+      code: item.code,
+      resource_type: "batch",
+      relay_chat_id: item.relayChatId || "",
+      relay_message_id: item.relayMessageId || null,
+      sort_order: Number(item.sortOrder || 0),
+      folder_id: folder.id,
+      folder_name: folderName,
+      file_name: item.fileName,
+      cloud_path: item.cloudPath,
+      file_size: item.size || 0,
+      uploader_id: msg.from?.id || null,
+      status: "uploading"
+    });
+  }
 
   const { data, error } = await db
     .from("resources")
@@ -1176,17 +1195,20 @@ function historyFileSize(size) {
 }
 
 async function sendHistoryDirectory(chatId, editMessageId = null) {
-  await backfillHistoryFolders(db);
+  // 每次打开目录时自动修复旧资源的目录关联。
+  // 只处理 folder_id 为空的记录，不会删除或移动已有资源。
+  const repaired = await backfillResourceFolders(db);
   const folders = await listHistoryFolders(db);
-  const text = folders.length
-    ? "📂 资源目录\n\n请选择文件夹：\n\n" +
-      folders.map((x, i) => (i + 1) + ". " + x).join("\n")
-    : "📂 资源目录\n\n还没有完成历史资源扫描。\n\n管理员先在「管理中心」点击「🔍 扫描历史资源」。";
+  const names = folders.map(x => String(x?.name || "")).filter(Boolean);
+
+  const text = names.length
+    ? "📂 资源目录\n\n📦 共 " + names.length + " 个文件夹\n\n请选择文件夹："
+    : "📂 资源目录\n\n还没有可用的资源目录。\n\n管理员先在「管理中心」扫描历史资源，或上传资源后再试。";
 
   const rows = [];
-  for (let i = 0; i < folders.length; i += 2) {
+  for (let i = 0; i < names.length; i += 2) {
     const row = [];
-    for (const folder of folders.slice(i, i + 2)) {
+    for (const folder of names.slice(i, i + 2)) {
       row.push({
         text: "📁 " + shortHistoryName(folder, 24),
         callback_data: "history_folder:" + historyFolderToken(folder)
@@ -1194,7 +1216,7 @@ async function sendHistoryDirectory(chatId, editMessageId = null) {
     }
     rows.push(row);
   }
-  if (folders.length) rows.push([{ text: "🔎 搜索历史资源", callback_data: "history_search" }]);
+  if (names.length) rows.push([{ text: "🔎 搜索历史资源", callback_data: "history_search" }]);
 
   const options = { reply_markup: { inline_keyboard: rows } };
   if (editMessageId) {
