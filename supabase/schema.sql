@@ -44,3 +44,9 @@ alter table public.resources add column if not exists resource_type text not nul
 alter table public.resources add column if not exists relay_chat_id text;
 alter table public.resources add column if not exists relay_message_id bigint;
 create index if not exists resources_relay_message_idx on public.resources(relay_chat_id, relay_message_id);
+
+
+-- 历史资源文件夹索引
+alter table public.resources add column if not exists folder_name text not null default '未分类';
+create index if not exists resources_folder_name_idx on public.resources(folder_name);
+create index if not exists resources_history_idx on public.resources(resource_type, folder_name, file_name);
