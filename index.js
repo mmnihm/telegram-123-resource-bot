@@ -17,6 +17,14 @@ const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
 const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
+const {
+  folderFromFilename,
+  listHistoryFolders,
+  listHistoryFiles,
+  searchHistoryFiles,
+  getHistoryFile,
+  sendHistoryFile
+} = require("./history-library");
 
 const {
   BOT_TOKEN,
@@ -116,6 +124,7 @@ const activeBatchCodes = new Map();
 const relayBindWait = new Set();
 const historyScanWait = new Set();
 const historyScanRunning = new Set();
+const historySearchWait = new Set();
 
 function scannerConfigured() {
   return Boolean(TELEGRAM_API_ID && TELEGRAM_API_HASH && TELEGRAM_SESSION);
@@ -352,6 +361,7 @@ async function scanRelayHistory(chatId, adminChatId) {
             relay_chat_id: relayId,
             relay_message_id: Number(message.id),
             sort_order: 0,
+            folder_name: folderFromFilename(media.fileName),
             file_name: media.fileName,
             cloud_path: cloudPath,
             file_size: media.size,
@@ -473,6 +483,10 @@ function isAdmin(msg) {
 
 function menu(isAdminUser = false) {
   const rows = [
+    [
+      { text: "📂 资源目录" },
+      { text: "🔎 搜索资源" }
+    ],
     [{ text: "📖 使用说明" }]
   ];
   if (isAdminUser) rows.push([{ text: "🛠 管理中心" }]);
@@ -1056,6 +1070,111 @@ async function getBotText(key) {
   return defaults[key] || "";
 }
 
+function historyFolderToken(folder) {
+  return Buffer.from(String(folder), "utf8").toString("base64url");
+}
+
+function historyFolderFromToken(token) {
+  return Buffer.from(String(token), "base64url").toString("utf8");
+}
+
+function shortHistoryName(name, max = 48) {
+  const value = String(name || "未命名资源");
+  return value.length > max ? value.slice(0, max - 1) + "…" : value;
+}
+
+function historyFileSize(size) {
+  const n = Number(size || 0);
+  if (!n) return "";
+  if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(1) + " GB";
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+
+async function sendHistoryDirectory(chatId, editMessageId = null) {
+  const folders = await listHistoryFolders(db);
+  const text = folders.length
+    ? "📂 资源目录\n\n请选择文件夹：\n\n" +
+      folders.map((x, i) => (i + 1) + ". " + x).join("\n")
+    : "📂 资源目录\n\n还没有完成历史资源扫描。\n\n管理员先在「管理中心」点击「🔍 扫描历史资源」。";
+
+  const rows = [];
+  for (let i = 0; i < folders.length; i += 2) {
+    const row = [];
+    for (const folder of folders.slice(i, i + 2)) {
+      row.push({
+        text: "📁 " + shortHistoryName(folder, 24),
+        callback_data: "history_folder:" + historyFolderToken(folder)
+      });
+    }
+    rows.push(row);
+  }
+  if (folders.length) rows.push([{ text: "🔎 搜索历史资源", callback_data: "history_search" }]);
+
+  const options = { reply_markup: { inline_keyboard: rows } };
+  if (editMessageId) {
+    return bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: editMessageId,
+      reply_markup: options.reply_markup
+    });
+  }
+  return bot.sendMessage(chatId, text, options);
+}
+
+async function sendHistoryFolder(chatId, folder, editMessageId = null) {
+  const files = await listHistoryFiles(db, folder, 50);
+  const text =
+    "📁 " + folder + "\n\n" +
+    "📦 共显示 " + files.length + " 个资源" +
+    (files.length >= 50 ? "（最多显示 50 个）" : "") +
+    "\n\n请选择资源：";
+
+  const rows = files.map(file => [{
+    text: "📄 " + shortHistoryName(file.file_name, 52) +
+      (file.file_size ? " · " + historyFileSize(file.file_size) : ""),
+    callback_data: "history_file:" + file.id
+  }]);
+  rows.push([{ text: "⬅️ 返回资源目录", callback_data: "history_root" }]);
+
+  const options = { reply_markup: { inline_keyboard: rows } };
+  if (editMessageId) {
+    return bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: editMessageId,
+      reply_markup: options.reply_markup
+    });
+  }
+  return bot.sendMessage(chatId, text, options);
+}
+
+async function sendHistorySearchResults(chatId, query, editMessageId = null) {
+  const files = await searchHistoryFiles(db, query, 30);
+  const text = files.length
+    ? "🔎 搜索结果\n\n关键词： " + query + "\n共找到 " + files.length + " 个资源\n\n点击资源名称即可获取原文件。"
+    : "🔎 搜索结果\n\n关键词： " + query + "\n\n没有找到匹配资源。";
+
+  const rows = files.map(file => [{
+    text: "📄 " + shortHistoryName(file.file_name, 52),
+    callback_data: "history_file:" + file.id
+  }]);
+  rows.push([
+    { text: "📂 资源目录", callback_data: "history_root" },
+    { text: "🔎 再搜一次", callback_data: "history_search" }
+  ]);
+
+  const options = { reply_markup: { inline_keyboard: rows } };
+  if (editMessageId) {
+    return bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: editMessageId,
+      reply_markup: options.reply_markup
+    });
+  }
+  return bot.sendMessage(chatId, text, options);
+}
+
 function adminTextMenu() {
   return {
     inline_keyboard: [
@@ -1142,6 +1261,55 @@ async function adminStats(chatId) {
     reply_markup: panel.keyboard
   });
 }
+
+bot.on("callback_query", async query => {
+  try {
+    const data = String(query.data || "");
+
+    if (data === "history_root") {
+      await bot.answerCallbackQuery(query.id);
+      return sendHistoryDirectory(query.message.chat.id, query.message.message_id);
+    }
+
+    if (data === "history_search") {
+      historySearchWait.add(String(query.from.id));
+      await bot.answerCallbackQuery(query.id);
+      return bot.sendMessage(
+        query.message.chat.id,
+        "🔎 搜索历史资源\n\n请直接发送文件名、关键词或文件夹名称。\n发送「取消」可退出搜索。"
+      );
+    }
+
+    if (data.startsWith("history_folder:")) {
+      const folder = historyFolderFromToken(data.slice("history_folder:".length));
+      await bot.answerCallbackQuery(query.id);
+      return sendHistoryFolder(query.message.chat.id, folder, query.message.message_id);
+    }
+
+    if (data.startsWith("history_file:")) {
+      const id = Number(data.slice("history_file:".length));
+      const resource = await getHistoryFile(db, id);
+      if (!resource) {
+        return bot.answerCallbackQuery(query.id, {
+          text: "资源不存在或已删除",
+          show_alert: true
+        });
+      }
+
+      await bot.answerCallbackQuery(query.id, { text: "正在发送原文件…" });
+      await sendHistoryFile(bot, query.message.chat.id, resource);
+      await db.from("resources")
+        .update({ downloads: Number(resource.downloads || 0) + 1 })
+        .eq("id", resource.id);
+      return;
+    }
+  } catch (e) {
+    console.error("HISTORY UI ERROR:", e);
+    try {
+      await bot.answerCallbackQuery(query.id, { text: "发送失败，请检查机器人是否仍在资源仓库中", show_alert: true });
+    } catch (_) {}
+  }
+});
 
 bot.on("callback_query", async query => {
   if (query.data !== "finish_upload") return;
@@ -1403,6 +1571,32 @@ bot.on("message", async msg => {
   if (msg.text?.startsWith("/")) return;
 
   try {
+    if (msg.text === "📂 资源目录") {
+      return sendHistoryDirectory(msg.chat.id);
+    }
+
+    if (msg.text === "🔎 搜索资源") {
+      historySearchWait.add(String(msg.from?.id || ""));
+      return bot.sendMessage(
+        msg.chat.id,
+        "🔎 搜索历史资源\n\n请直接发送文件名、关键词或文件夹名称。\n发送「取消」可退出搜索。"
+      );
+    }
+
+    if (historySearchWait.has(String(msg.from?.id || "")) && msg.text) {
+      historySearchWait.delete(String(msg.from?.id || ""));
+      const q = msg.text.trim();
+      if (!q || q === "取消") {
+        return bot.sendMessage(msg.chat.id, "✅ 已取消搜索。", menu(isAdmin(msg)));
+      }
+      try {
+        return await sendHistorySearchResults(msg.chat.id, q);
+      } catch (e) {
+        console.error("HISTORY SEARCH ERROR:", e);
+        return bot.sendMessage(msg.chat.id, "❌ 搜索失败，请稍后重试。");
+      }
+    }
+
     if (msg.text === "📖 使用说明") {
       return bot.sendMessage(msg.chat.id,
         "📖 使用说明\n\n" +
