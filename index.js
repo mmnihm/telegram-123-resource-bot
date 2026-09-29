@@ -19,6 +19,7 @@ const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const {
   folderFromFilename,
+  getOrCreateFolder,
   backfillHistoryFolders,
   listHistoryFolders,
   listHistoryFiles,
@@ -356,13 +357,17 @@ async function scanRelayHistory(chatId, adminChatId) {
             "/" +
             message.id + "_" + media.fileName;
 
+          const folderName = folderFromFilename(media.fileName);
+          const folder = await getOrCreateFolder(db, folderName);
+
           const { error } = await db.from("resources").insert({
             code: null,
             resource_type: "history",
             relay_chat_id: relayId,
             relay_message_id: Number(message.id),
             sort_order: 0,
-            folder_name: folderFromFilename(media.fileName),
+            folder_id: folder.id,
+            folder_name: folderName,
             file_name: media.fileName,
             cloud_path: cloudPath,
             file_size: media.size,
