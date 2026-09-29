@@ -40,6 +40,23 @@ function escapeLike(value) {
   return String(value || "").replace(/[\\%_]/g, m => "\\" + m);
 }
 
+async function backfillHistoryFolders(db, limit = 5000) {
+  const { data, error } = await db
+    .from("resources")
+    .select("id,file_name,folder_name")
+    .eq("resource_type", "history")
+    .neq("status", "deleted")
+    .limit(limit);
+  if (error) throw error;
+
+  for (const row of data || []) {
+    const next = folderFromFilename(row.file_name);
+    if ((row.folder_name || "未分类") !== next) {
+      await db.from("resources").update({ folder_name: next }).eq("id", row.id);
+    }
+  }
+}
+
 async function listHistoryFolders(db, limit = 80) {
   const { data, error } = await db
     .from("resources")
@@ -114,6 +131,7 @@ async function sendHistoryFile(bot, chatId, resource) {
 
 module.exports = {
   folderFromFilename,
+  backfillHistoryFolders,
   listHistoryFolders,
   listHistoryFiles,
   searchHistoryFiles,
