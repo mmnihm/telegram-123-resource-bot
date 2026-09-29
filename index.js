@@ -148,6 +148,7 @@ function historyMediaInfo(message) {
 
 const SCANNER_CONNECT_TIMEOUT_MS = 30000;
 const SCANNER_ENTITY_TIMEOUT_MS = 20000;
+const SCANNER_DIALOG_TIMEOUT_MS = 30000;
 
 function withTimeout(promise, ms, message) {
   let timer;
@@ -155,6 +156,70 @@ function withTimeout(promise, ms, message) {
     timer = setTimeout(() => reject(new Error(message)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function normalizeTelegramId(value) {
+  return String(value ?? "").trim();
+}
+
+async function findScannerRepository(client, relayChatId) {
+  const targetId = normalizeTelegramId(relayChatId);
+  if (!targetId) throw new Error("资源仓库 ID 为空");
+
+  let checked = 0;
+  let matched = null;
+  const candidates = [];
+
+  // 不再直接 client.getEntity(-100...)。
+  // Telegram/GramJS 对“账号从未缓存过的 ID”可能无法解析，
+  // 所以先读取扫描账号实际能访问的全部对话，再按 Bot API Chat ID 精确匹配。
+  await withTimeout((async () => {
+    for await (const dialog of client.iterDialogs({})) {
+      checked++;
+
+      const dialogId = normalizeTelegramId(dialog?.id);
+      const entityId = normalizeTelegramId(dialog?.entity?.id);
+
+      if (dialogId === targetId || entityId === targetId) {
+        matched = dialog;
+        break;
+      }
+
+      if (dialog?.isChannel || dialog?.isGroup) {
+        candidates.push({
+          id: dialogId || entityId,
+          title: String(dialog?.title || dialog?.name || "未命名")
+        });
+      }
+    }
+  })(), SCANNER_DIALOG_TIMEOUT_MS,
+    "扫描账号读取 Telegram 对话列表超时（30 秒），请确认扫描账号网络正常。"
+  );
+
+  if (matched?.entity) {
+    return {
+      entity: matched.entity,
+      title: String(matched.title || matched.name || "资源仓库"),
+      id: normalizeTelegramId(matched.id || matched.entity.id),
+      checked
+    };
+  }
+
+  const preview = candidates
+    .slice(0, 12)
+    .map(x => "• " + x.title + "（" + x.id + "）")
+    .join("\n");
+
+  throw new Error(
+    "扫描账号在自己的 Telegram 对话列表中找不到当前资源仓库。\n\n" +
+    "📦 目标 ID：" + targetId + "\n" +
+    "🔎 已检查对话：" + checked + "\n\n" +
+    "请确认：\n" +
+    "1. 扫描账号就是加入资源仓库的账号\n" +
+    "2. 扫描账号在 Telegram 客户端打开过该群/频道\n" +
+    "3. 当前绑定的中转仓没有更换\n\n" +
+    (preview ? "扫描账号可见的部分群/频道：\n" + preview : "扫描账号当前没有发现可用的群/频道")
+  );
 }
 
 async function getScannerClient(statusCallback) {
@@ -171,7 +236,10 @@ async function getScannerClient(statusCallback) {
     new StringSession(TELEGRAM_SESSION),
     apiId,
     TELEGRAM_API_HASH,
-    { connectionRetries: 5 }
+    {
+      connectionRetries: 5,
+      requestRetries: 3
+    }
   );
 
   try {
@@ -179,14 +247,14 @@ async function getScannerClient(statusCallback) {
     await withTimeout(
       client.connect(),
       SCANNER_CONNECT_TIMEOUT_MS,
-      "Telegram 扫描账号连接超时（30 秒），请检查 Render 网络或扫描账号连接状态。"
+      "Telegram 扫描账号连接超时（30 秒），请检查部署平台网络或扫描账号连接状态。"
     );
 
     if (!(await client.checkAuthorization())) {
       throw new Error("TELEGRAM_SESSION 无效或已失效");
     }
 
-    if (statusCallback) await statusCallback("🟢 Telegram 扫描账号已连接，正在识别资源仓库……");
+    if (statusCallback) await statusCallback("🟢 扫描账号已连接，正在读取它能访问的群组/频道……");
     return client;
   } catch (e) {
     try { await client.disconnect(); } catch (_) {}
@@ -205,58 +273,61 @@ async function scanRelayHistory(chatId, adminChatId) {
   let scanned = 0;
   let imported = 0;
   let skipped = 0;
+  let mediaSkipped = 0;
 
   try {
     client = await getScannerClient(async text => {
       await bot.sendMessage(adminChatId, text);
     });
 
-    const relayId = String(chatId || "").trim();
-    const numericRelayId = Number(relayId);
-    if (!Number.isSafeInteger(numericRelayId) || !numericRelayId) {
-      throw new Error("资源仓库 ID 无效：" + relayId);
+    const relayId = normalizeTelegramId(chatId);
+    if (!relayId) {
+      throw new Error("资源仓库 ID 无效");
     }
 
-    // 保持原来的仓库匹配目标不变：仍然使用已绑定的 relay_chat_id。
-    // 这里只把数据库中的字符串 ID 转成 Telegram/GramJS 可识别的整数实体，
-    // 避免把 "-100..." 字符串误当成用户名处理。
-    const relayEntity = await withTimeout(
-      client.getEntity(numericRelayId),
-      SCANNER_ENTITY_TIMEOUT_MS,
-      "资源仓库识别超时（20 秒），请确认扫描账号已经加入并打开该仓库。"
-    );
+    const repository = await findScannerRepository(client, relayId);
 
     await bot.sendMessage(
       adminChatId,
       "✅ 资源仓库识别成功\n\n" +
-      "📦 仓库 ID：" + relayId + "\n" +
+      "📦 仓库：" + repository.title + "\n" +
+      "🆔 ID：" + relayId + "\n" +
+      "🔎 已检查对话：" + repository.checked + "\n" +
       "📌 扫描账号已确认可以访问该仓库。"
     );
 
     const cursorKey = "history_scan_cursor_" + relayId;
-    const savedCursor = Number(await getSetting(cursorKey) || 0);
+    const savedCursorRaw = await getSetting(cursorKey);
+    const savedCursor = Number(savedCursorRaw || 0);
 
     await bot.sendMessage(
       adminChatId,
-      "🔍 已启动自动历史扫描\n\n" +
-      "📦 中转仓：" + chatId + "\n" +
+      "🔍 已启动历史资源扫描\n\n" +
+      "📦 仓库：" + repository.title + "\n" +
       "📌 扫描方式：MTProto\n" +
-      (savedCursor ? "▶️ 从上次位置继续\n" : "▶️ 从最新消息开始扫描\n") +
-      "⏳ 正在读取频道历史消息……"
+      "📌 模式：只读取消息和文件元数据，不下载文件\n" +
+      (savedCursor
+        ? "▶️ 从上次中断位置继续\n"
+        : "▶️ 从最新消息向历史记录扫描\n") +
+      "⏳ 正在读取历史消息……"
     );
 
-    for await (const message of client.iterMessages(relayEntity, {
-      limit: 100,
+    // 重要：这里不下载任何文件。
+    // 只保存 Telegram 消息 ID、文件名、大小等索引信息，
+    // 避免历史扫描本身消耗服务器/123 云盘流量。
+    for await (const message of client.iterMessages(repository.entity, {
       maxId: savedCursor || undefined
     })) {
       scanned++;
 
       const media = historyMediaInfo(message);
-      if (media) {
+      if (!media) {
+        mediaSkipped++;
+      } else {
         const { data: existing, error: existingError } = await db
           .from("resources")
           .select("id")
-          .eq("relay_chat_id", String(chatId))
+          .eq("relay_chat_id", relayId)
           .eq("relay_message_id", Number(message.id))
           .limit(1);
 
@@ -265,16 +336,20 @@ async function scanRelayHistory(chatId, adminChatId) {
         if (existing?.length) {
           skipped++;
         } else {
+          // 历史资源不生成取件码，也不上传到 123 云盘。
+          // 取件时直接根据 relay_chat_id + relay_message_id
+          // 从 Telegram 中转仓复制给用户。
           const cloudPath =
             DAV_ROOT.replace(/\\/g, "/").replace(/\/$/, "") +
             "/history/telegram_" +
-            String(chatId).replace(/[^0-9-]/g, "") +
-            "/" + message.id + "_" + media.fileName;
+            relayId.replace(/[^0-9-]/g, "") +
+            "/" +
+            message.id + "_" + media.fileName;
 
           const { error } = await db.from("resources").insert({
             code: null,
             resource_type: "history",
-            relay_chat_id: String(chatId),
+            relay_chat_id: relayId,
             relay_message_id: Number(message.id),
             sort_order: 0,
             file_name: media.fileName,
@@ -289,6 +364,9 @@ async function scanRelayHistory(chatId, adminChatId) {
         }
       }
 
+      // 每处理一条消息就保存游标。
+      // 即使服务器中途重启，下一次也会从上次位置继续，
+      // 已入库的消息还会通过 relay_chat_id + relay_message_id 去重。
       await setSetting(cursorKey, String(message.id));
 
       if (scanned % 500 === 0) {
@@ -298,6 +376,7 @@ async function scanRelayHistory(chatId, adminChatId) {
           "📨 已扫描：" + scanned + "\n" +
           "📄 新增资源：" + imported + "\n" +
           "⏭️ 已存在：" + skipped + "\n" +
+          "📝 非文件消息：" + mediaSkipped + "\n" +
           "🆔 当前消息：" + message.id
         );
       }
@@ -308,12 +387,14 @@ async function scanRelayHistory(chatId, adminChatId) {
       "✅ 历史扫描完成\n\n" +
       "📨 扫描消息：" + scanned + "\n" +
       "📄 新增资源：" + imported + "\n" +
-      "⏭️ 已存在：" + skipped + "\n\n" +
+      "⏭️ 已存在：" + skipped + "\n" +
+      "📝 非文件消息：" + mediaSkipped + "\n\n" +
       "🔑 历史资源不会生成取件码。\n" +
-      "📦 已建立频道消息索引。"
+      "📦 已建立 Telegram 消息索引。\n" +
+      "☁️ 本次扫描没有下载文件，不额外消耗 123 云盘流量。"
     );
 
-    return { scanned, imported, skipped };
+    return { scanned, imported, skipped, mediaSkipped };
   } finally {
     historyScanRunning.delete(key);
     if (client) {
