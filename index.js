@@ -734,6 +734,7 @@ async function importHistoryResource(msg) {
       resource_type: "history",
       relay_chat_id: sourceChatId,
       relay_message_id: sourceMessageId,
+      folder_name: folderFromFilename(name),
       file_name: name,
       cloud_path: cloudPath,
       file_size: info.size || 0,
