@@ -35,6 +35,11 @@ DAV_URL=
 DAV_USERNAME=
 DAV_PASSWORD=
 DAV_ROOT=/telegram-resource-bot
+
+# MTProto 历史资源扫描（用户账号，不是机器人 Token）
+TELEGRAM_API_ID=
+TELEGRAM_API_HASH=
+TELEGRAM_SESSION=
 ```
 
 ## 管理命令
