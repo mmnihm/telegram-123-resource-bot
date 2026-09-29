@@ -40,49 +40,96 @@ function escapeLike(value) {
   return String(value || "").replace(/[\\%_]/g, m => "\\" + m);
 }
 
+async function getOrCreateFolder(db, name) {
+  const folderName = cleanFolder(name);
+
+  const { data: existing, error: existingError } = await db
+    .from("folders")
+    .select("id,name,status")
+    .eq("name", folderName)
+    .eq("status", "active")
+    .limit(1)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+  if (existing) return existing;
+
+  const { data, error } = await db
+    .from("folders")
+    .insert({ name: folderName, status: "active" })
+    .select("id,name,status")
+    .single();
+
+  if (!error) return data;
+
+  // 多个机器人/扫描任务同时创建同名目录时，唯一索引可能发生竞争；重新读取即可。
+  const { data: retry, error: retryError } = await db
+    .from("folders")
+    .select("id,name,status")
+    .eq("name", folderName)
+    .eq("status", "active")
+    .limit(1)
+    .maybeSingle();
+
+  if (retryError) throw retryError;
+  if (retry) return retry;
+  throw error;
+}
+
 async function backfillHistoryFolders(db, limit = 5000) {
   const { data, error } = await db
     .from("resources")
-    .select("id,file_name,folder_name")
+    .select("id,file_name,folder_name,folder_id")
     .eq("resource_type", "history")
     .neq("status", "deleted")
+    .order("id", { ascending: true })
     .limit(limit);
   if (error) throw error;
 
+  const cache = new Map();
+
   for (const row of data || []) {
     const next = folderFromFilename(row.file_name);
-    if ((row.folder_name || "未分类") !== next) {
-      await db.from("resources").update({ folder_name: next }).eq("id", row.id);
+    const name = cleanFolder(next);
+    let folder = cache.get(name);
+
+    if (!folder) {
+      folder = await getOrCreateFolder(db, name);
+      cache.set(name, folder);
+    }
+
+    const updates = {};
+    if ((row.folder_name || "未分类") !== name) updates.folder_name = name;
+    if (Number(row.folder_id || 0) !== Number(folder.id)) updates.folder_id = folder.id;
+
+    if (Object.keys(updates).length) {
+      const { error: updateError } = await db
+        .from("resources")
+        .update(updates)
+        .eq("id", row.id);
+      if (updateError) throw updateError;
     }
   }
+
+  return cache.size;
 }
 
 async function listHistoryFolders(db, limit = 80) {
   const { data, error } = await db
-    .from("resources")
-    .select("folder_name")
-    .eq("resource_type", "history")
-    .neq("status", "deleted")
-    .order("folder_name", { ascending: true })
-    .limit(5000);
+    .from("folders")
+    .select("id,name,sort_order")
+    .eq("status", "active")
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(limit);
   if (error) throw error;
-
-  const seen = new Set();
-  const folders = [];
-  for (const row of data || []) {
-    const name = row.folder_name || "未分类";
-    if (seen.has(name)) continue;
-    seen.add(name);
-    folders.push(name);
-    if (folders.length >= limit) break;
-  }
-  return folders;
+  return data || [];
 }
 
 async function listHistoryFiles(db, folder, limit = 50) {
   const { data, error } = await db
     .from("resources")
-    .select("id,folder_name,file_name,file_size,relay_chat_id,relay_message_id")
+    .select("id,folder_id,folder_name,file_name,file_size,relay_chat_id,relay_message_id")
     .eq("resource_type", "history")
     .eq("folder_name", folder)
     .neq("status", "deleted")
@@ -131,6 +178,8 @@ async function sendHistoryFile(bot, chatId, resource) {
 
 module.exports = {
   folderFromFilename,
+  cleanFolder,
+  getOrCreateFolder,
   backfillHistoryFolders,
   listHistoryFolders,
   listHistoryFiles,
