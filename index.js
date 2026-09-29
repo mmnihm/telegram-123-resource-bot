@@ -113,18 +113,18 @@ const admins = new Set(
   ADMIN_IDS.split(",").map(x => x.trim()).filter(Boolean)
 );
 
-// 多机器人共享同一个 Supabase 资源库。
-// main：主机器人，保留管理/扫描/上传功能。
-// child：子机器人，默认只提供目录、搜索、随机、最新、取件。
-// 子机器人只有显式设置 ALLOW_UPLOAD=true 才允许上传。
-const BOT_ROLE_NORMALIZED = String(BOT_ROLE || "main").trim().toLowerCase();
-const IS_MAIN_BOT = BOT_ROLE_NORMALIZED !== "child";
-const UPLOAD_ENABLED = IS_MAIN_BOT || String(ALLOW_UPLOAD).trim().toLowerCase() === "true";
+// 多机器人完全平等模式：
+// 所有机器人连接同一个 Supabase 资源库，共享 folders、resources、bot_settings。
+// 任意一个机器人建立目录、上传资源、扫描历史资源或修改管理设置，
+// 其他使用同一套 Supabase 配置的机器人都会立即看到。
+// 保留 BOT_ROLE / ALLOW_UPLOAD 环境变量仅为兼容旧部署配置，但不再区分主次。
+const SHARED_RESOURCE_MODE = true;
+const UPLOAD_ENABLED = true;
 
 console.log(
-  "Bot role: " + (IS_MAIN_BOT ? "main" : "child") +
+  "Bot mode: equal/shared" +
   " | shared Supabase: enabled" +
-  " | upload: " + (UPLOAD_ENABLED ? "enabled" : "disabled")
+  " | upload: enabled"
 );
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -499,8 +499,7 @@ function clearPending(key) {
 }
 
 function isAdmin(msg) {
-  // 子机器人即使配置了 ADMIN_IDS，也不开放主机器人管理功能。
-  if (!IS_MAIN_BOT) return false;
+  // 所有机器人使用相同的 ADMIN_IDS，管理员权限完全一致。
   const id = String(msg.from?.id || "");
   const username = String(msg.from?.username || "");
   return admins.has(id) || (username && admins.has("@" + username));
@@ -1782,14 +1781,8 @@ bot.on("message", async msg => {
 
     const info = await getFileInfo(msg);
     if (info) {
-      if (!UPLOAD_ENABLED) {
-        return bot.sendMessage(
-          msg.chat.id,
-          "📚 当前为资源浏览机器人\n\n" +
-          "这里仅提供共享资源库的目录、搜索、随机、最新资源和取件功能。\n\n" +
-          "📤 如需上传资源，请使用主机器人。"
-        );
-      }
+      // 所有机器人均可上传资源。
+      // 它们共用同一个 Supabase 资源库和 Telegram 中转仓。
 
       // Telegram 中转仓是主存储；123 云盘只作为后台备份。
       // 因此即使 WebDAV 暂时不可用，也不能阻止资源进入中转仓和数据库。
@@ -2001,7 +1994,7 @@ bot.getMe()
     BOT_USERNAME = me.username || "";
     console.log(
       "Bot started: @" + (BOT_USERNAME || "unknown") +
-      " | role=" + (IS_MAIN_BOT ? "main" : "child") +
+      " | mode=equal/shared" +
       " | shared Supabase=" + SUPABASE_URL
     );
     return ensureDavRoot();
