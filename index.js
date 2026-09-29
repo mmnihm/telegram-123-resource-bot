@@ -19,6 +19,7 @@ const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const {
   folderFromFilename,
+  backfillHistoryFolders,
   listHistoryFolders,
   listHistoryFiles,
   searchHistoryFiles,
@@ -1093,6 +1094,7 @@ function historyFileSize(size) {
 }
 
 async function sendHistoryDirectory(chatId, editMessageId = null) {
+  await backfillHistoryFolders(db);
   const folders = await listHistoryFolders(db);
   const text = folders.length
     ? "📂 资源目录\n\n请选择文件夹：\n\n" +
@@ -1360,6 +1362,7 @@ bot.on("callback_query", async query => {
 bot.on("callback_query", async query => {
   try {
     if (query.data === "finish_upload") return;
+    if (String(query.data || "").startsWith("history_")) return;
     const msg = query.message;
     if (!msg || !isAdmin({ from: query.from })) {
       return bot.answerCallbackQuery(query.id, {
