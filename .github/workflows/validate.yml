@@ -17,4 +17,5 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           node --check index.js
-          node --check history-library.js
+          node --check pickup-code.js
+          npm test
