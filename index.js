@@ -20,7 +20,7 @@ db.exec("CREATE TABLE IF NOT EXISTS batches(code TEXT PRIMARY KEY,owner_id TEXT 
 "CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT NOT NULL,channel_message_id INTEGER NOT NULL,file_name TEXT NOT NULL DEFAULT 'Telegram 文件',file_size INTEGER NOT NULL DEFAULT 0,media_type TEXT NOT NULL DEFAULT 'file',FOREIGN KEY(code) REFERENCES batches(code));"+
 "CREATE INDEX IF NOT EXISTS idx_files_code ON files(code);");
 const bot=new TelegramBot(TOKEN,{polling:true});
-const pending=new Map(), waiting=new Set(), busy=new Set();
+const pending=new Map(), waiting=new Set(), uploadQueues=new Map();
 const adminKb={keyboard:[[{text:"📦 完成保存并生成取件码"}],[{text:"🛠 管理中心"},{text:"📊 存储统计"}],[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
 const userKb={keyboard:[[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
 const isAdmin=m=>m?.from?.id!=null&&ADMINS.has(String(m.from.id));
@@ -46,15 +46,21 @@ async function start(m,c){await bot.sendMessage(m.chat.id,welcome(m),{reply_mark
 async function saveFile(m){
  if(!isAdmin(m)||m.chat.type!=="private")return false;
  const info=mediaInfo(m);if(!info)return false;
- const uid=String(m.from.id);if(busy.has(uid)){await bot.sendMessage(m.chat.id,"⏳ 正在保存上一条文件，请稍候。");return true;}
- busy.add(uid);
- try{
-  const copied=await bot.copyMessage(CHANNEL,m.chat.id,m.message_id);
-  if(!pending.has(uid))pending.set(uid,[]);
-  pending.get(uid).push({mid:Number(copied.message_id),name:String(info.name).slice(0,250),size:info.size,type:info.type});
-  await bot.sendMessage(m.chat.id,"✅ 已保存到私密频道\n\n📦 本批已接收："+pending.get(uid).length+" 个文件\n📄 当前文件："+info.name+"\n\n全部发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
- }catch(e){console.error("STORE ERROR",e.message);await bot.sendMessage(m.chat.id,"❌ 保存失败。请确认机器人已加入私密频道并有发布消息权限。\n"+String(e.message||"").slice(0,220));}
- finally{busy.delete(uid);}
+ const uid=String(m.from.id);
+ const previous=uploadQueues.get(uid)||Promise.resolve();
+ const task=previous.catch(()=>{}).then(async()=>{
+  try{
+   const copied=await bot.copyMessage(CHANNEL,m.chat.id,m.message_id);
+   if(!pending.has(uid))pending.set(uid,[]);
+   pending.get(uid).push({mid:Number(copied.message_id),name:String(info.name).slice(0,250),size:info.size,type:info.type});
+   await bot.sendMessage(m.chat.id,"✅ 已保存到私密频道\n\n📦 本批已接收："+pending.get(uid).length+" 个文件\n📄 当前文件："+info.name+"\n\n全部发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
+  }catch(e){
+   console.error("STORE ERROR",e.message);
+   await bot.sendMessage(m.chat.id,"❌ 保存失败。请确认机器人已加入私密频道并有发布消息权限。\n"+String(e.message||"").slice(0,220));
+  }
+ });
+ uploadQueues.set(uid,task);
+ try{await task;}finally{if(uploadQueues.get(uid)===task)uploadQueues.delete(uid);}
  return true;
 }
 async function finish(m){
