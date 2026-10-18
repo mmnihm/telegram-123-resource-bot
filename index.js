@@ -57,7 +57,9 @@ async function saveFile(m){
  const previous=uploadQueues.get(uid)||Promise.resolve();
  const task=previous.catch(()=>{}).then(async()=>{
   try{
-   const channel=getChannel();\n   if(!channel)throw Error("尚未绑定存储频道，请先点击「📡 绑定/更换存储频道」");\n   const copied=await bot.copyMessage(channel,m.chat.id,m.message_id);
+   const channel=getChannel();
+   if(!channelthrow Error("尚未绑定存储频道，请先点击「📡 绑定/更换存储频道」");
+   const copied=await bot.copyMessage(channel,m.chat.id,m.message_id);
    if(!pending.has(uid))pending.set(uid,[]);
    pending.get(uid).push({mid:Number(copied.message_id),name:String(info.name).slice(0,250),size:info.size,type:info.type});
    await bot.sendMessage(m.chat.id,"✅ 已保存到私密频道\n\n📦 本批已接收："+pending.get(uid).length+" 个文件\n📄 当前文件："+info.name+"\n\n全部发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
@@ -93,7 +95,9 @@ async function finish(m){
 async function deliver(chatId,raw){
  const code=String(raw||"").trim();
  if(!validCode(code))return bot.sendMessage(chatId,"⚠️ 请输入 6 位数字取件码。",{reply_markup:userKb});
- const channel=getChannel();\n if(!channel)return bot.sendMessage(chatId,"⚠️ 管理员尚未绑定存储频道，请稍后再试。",{reply_markup:userKb});\n const batch=db.prepare("SELECT code FROM batches WHERE code=?").get(code);
+ const channel=getChannel();
+ if(!channelreturn bot.sendMessage(chatId,"⚠️ 管理员尚未绑定存储频道，请稍后再试。",{reply_markup:userKb});
+ const batch=db.prepare("SELECT code FROM batches WHERE code=?").get(code);
  if(!batch)return bot.sendMessage(chatId,"❌ 没有找到这个取件码，请检查是否输入正确。",{reply_markup:userKb});
  const files=db.prepare("SELECT channel_message_id FROM files WHERE code=? ORDER BY id").all(code);
  if(!files.length)return bot.sendMessage(chatId,"⚠️ 该取件码没有可用文件，请联系管理员。");
