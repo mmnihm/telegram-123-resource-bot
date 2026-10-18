@@ -1,12 +1,38 @@
 require("dotenv").config();
 
-// Render Web Service 健康检查端口。
-// Telegram Bot 仍然使用 polling，不影响机器人功能。
+// Render/Web Service health endpoints.
+// /health is a liveness check; /ready also verifies the database connection
+// and that Telegram getMe succeeded during startup.
 const http = require("http");
 const PORT = Number(process.env.PORT || 10000);
-const healthServer = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("OK");
+let botReady = false;
+let dbClient = null;
+const healthServer = http.createServer(async (req, res) => {
+  const path = String(req.url || "/").split("?")[0];
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  if (path === "/health") {
+    res.writeHead(200);
+    return res.end(JSON.stringify({ ok: true, status: "alive" }));
+  }
+  if (path === "/ready") {
+    if (!botReady || !dbClient) {
+      res.writeHead(503);
+      return res.end(JSON.stringify({ ok: false, status: "starting" }));
+    }
+    try {
+      const { error } = await dbClient
+        .from("resources")
+        .select("id", { head: true, count: "exact" });
+      if (error) throw error;
+      res.writeHead(200);
+      return res.end(JSON.stringify({ ok: true, status: "ready" }));
+    } catch (_) {
+      res.writeHead(503);
+      return res.end(JSON.stringify({ ok: false, status: "dependency_unavailable" }));
+    }
+  }
+  res.writeHead(404);
+  res.end(JSON.stringify({ ok: false, status: "not_found" }));
 });
 healthServer.listen(PORT, "0.0.0.0", () => {
   console.log("Health server listening on port " + PORT);
@@ -136,6 +162,7 @@ bot.on("error", err => {
   console.error("TELEGRAM BOT ERROR:", err?.message || err);
 });
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+dbClient = db;
 let BOT_USERNAME = "";
 const pendingUploads = new Map();
 const batchPromptMessages = new Map();
@@ -931,16 +958,6 @@ async function findResources(c) {
   }
 
   return unique;
-}
-
-async function findResources(c) {
-  const { data, error } = await db.from("resources")
-    .select("*")
-    .eq("code", c.toUpperCase())
-    .neq("status", "deleted")
-    .order("id", { ascending: true });
-  if (error) throw error;
-  return data || [];
 }
 
 async function waitForResourcesReady(c, timeoutMs = 120000) {
@@ -1990,17 +2007,23 @@ bot.on("message", async msg => {
 });
 
 bot.getMe()
-  .then(me => {
+  .then(async me => {
     BOT_USERNAME = me.username || "";
     console.log(
       "Bot started: @" + (BOT_USERNAME || "unknown") +
       " | mode=equal/shared" +
       " | shared Supabase=" + SUPABASE_URL
     );
+    const { error } = await db.from("resources")
+      .select("id", { head: true, count: "exact" });
+    if (error) throw error;
+    botReady = true;
+    console.log("Startup dependency check: Telegram and Supabase OK");
     return ensureDavRoot();
   })
   .catch(err => {
-    console.error("Bot startup check failed:", err);
+    botReady = false;
+    console.error("Bot startup check failed:", err?.message || err);
   });
 
 process.on("unhandledRejection", err => {
