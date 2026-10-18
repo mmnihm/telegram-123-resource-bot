@@ -4,13 +4,11 @@ const fs=require("node:fs"), path=require("node:path"), http=require("node:http"
 const TelegramBot=require("node-telegram-bot-api");
 const Database=require("better-sqlite3");
 const TOKEN=String(process.env.BOT_TOKEN||"").trim();
-const ADMINS=new Set(String(process.env.ADMIN_IDS||"").split(",").map(x=>x.trim()).filter(Boolean));
 
 const PORT=Number(process.env.PORT||10000);
 const DB_FILE=path.resolve(process.env.DATABASE_FILE||"./data/store.db");
 const USERNAME=String(process.env.BOT_USERNAME||"").replace(/^@/,"").trim();
 if(!TOKEN) throw Error("缺少环境变量：BOT_TOKEN");
-if(!ADMINS.size) throw Error("缺少环境变量：ADMIN_IDS（管理员 Telegram 数字 ID）");
 fs.mkdirSync(path.dirname(DB_FILE),{recursive:true});
 const db=new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
@@ -26,7 +24,13 @@ const getChannel=()=>String(db.prepare("SELECT value FROM settings WHERE key=?")
 const setChannel=id=>db.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run("storage_channel_id",String(id));
 const adminKb={keyboard:[[{text:"📡 绑定/更换存储频道"}],[{text:"📦 完成保存并生成取件码"}],[{text:"🛠 管理中心"},{text:"📊 存储统计"}],[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
 const userKb={keyboard:[[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
-const isAdmin=m=>m?.from?.id!=null&&ADMINS.has(String(m.from.id));
+const getAdminId=()=>String(db.prepare("SELECT value FROM settings WHERE key=?").get("admin_id")?.value||"").trim();
+const isAdmin=m=>m?.from?.id!=null&&getAdminId()===String(m.from.id);
+function claimFirstAdmin(m){
+ if(!m?.from?.id||m.from.is_bot||m.chat?.type!=="private")return false;
+ const result=db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('admin_id',?)").run(String(m.from.id));
+ return result.changes===1;
+}
 const kb=m=>isAdmin(m)?adminKb:userKb;
 const validCode=s=>/^\d{6}$/.test(String(s||"").trim());
 function newCode(){let c;do{c=String(100000+Math.floor(Math.random()*900000));}while(db.prepare("SELECT 1 FROM batches WHERE code=?").get(c));return c;}
@@ -43,7 +47,7 @@ function mediaInfo(m){
 }
 function bytes(v){v=Number(v||0);if(v>=1073741824)return(v/1073741824).toFixed(2)+" GB";if(v>=1048576)return(v/1048576).toFixed(2)+" MB";if(v>=1024)return(v/1024).toFixed(1)+" KB";return v?v+" B":"未知";}
 function welcome(m){return isAdmin(m)
-?"🛠 取件码机器人管理中心\n\n📤 直接把文件、图片或视频发给我。\n📦 全部发送完成后点击「完成保存并生成取件码」。\n🔑 系统生成 6 位数字取件码。\n\n存储：Telegram 私密频道 + SQLite 索引。\n无需 Supabase、123 网盘或 WebDAV。"
+?"🛠 取件码机器人管理中心\n\n📡 首次启动用户已自动设为管理员。\n📤 直接把文件、图片或视频发给我。\n📦 全部发送完成后点击「完成保存并生成取件码」。\n🔑 系统生成 6 位数字取件码。\n\n存储：Telegram 私密频道 + SQLite 索引。\n无需 Supabase、123 网盘或 WebDAV。"
 :"👋 欢迎使用取件码机器人\n\n点击「🔑 查询取件码」，发送 6 位数字，机器人会发送对应批次的全部文件。";}
 async function start(m,c){await bot.sendMessage(m.chat.id,welcome(m),{reply_markup:kb(m)});if(c&&validCode(c))await deliver(m.chat.id,c);}
 async function saveFile(m){
@@ -140,7 +144,7 @@ async function handleText(m){
  if(admin)return bot.sendMessage(m.chat.id,"📤 请直接发送文件、图片或视频；发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
  return bot.sendMessage(m.chat.id,"请点击「🔑 查询取件码」，再发送 6 位数字。",{reply_markup:userKb});
 }
-bot.on("message",async m=>{try{if(m.chat.type!=="private")return;if(await handleChannelBinding(m))return;if(m.text)return await handleText(m);if(await saveFile(m))return;}catch(e){console.error("HANDLER ERROR",e.stack||e.message||e);try{await bot.sendMessage(m.chat.id,"⚠️ 操作失败，请稍后重试。");}catch(_){}}});
+bot.on("message",async m=>{try{if(m.chat.type!=="private")return;if(!getAdminId())claimFirstAdmin(m);if(await handleChannelBinding(m))return;if(m.text)return await handleText(m);if(await saveFile(m))return;}catch(e){console.error("HANDLER ERROR",e.stack||e.message||e);try{await bot.sendMessage(m.chat.id,"⚠️ 操作失败，请稍后重试。");}catch(_){}}});
 bot.on("polling_error",e=>console.error("TELEGRAM POLLING ERROR",e?.message||e));
 const server=http.createServer((req,res)=>{if(req.url==="/health"||req.url==="/ready"){res.writeHead(200,{"content-type":"application/json; charset=utf-8"});return res.end(JSON.stringify({ok:true,service:"telegram-pickup-bot"}));}res.writeHead(404);res.end("Not found");});
 server.listen(PORT,"0.0.0.0",()=>console.log("Pickup bot ready; port="+PORT+"; channel="+(getChannel()||"not-bound")+"; db="+DB_FILE));
