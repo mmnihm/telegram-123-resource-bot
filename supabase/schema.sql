@@ -91,5 +91,19 @@ revoke all privileges on table public.resources, public.folders, public.bot_sett
 grant all privileges on table public.resources, public.folders, public.bot_settings
   to service_role;
 
-grant usage, select on sequence public.resources_id_seq, public.folders_id_seq
-  to service_role;
+-- Grant sequence access only when the table's identity/serial sequence exists.
+do $
+declare
+  seq_name text;
+begin
+  seq_name := pg_get_serial_sequence('public.resources', 'id');
+  if seq_name is not null then
+    execute format('grant usage, select on sequence %s to service_role', seq_name);
+  end if;
+
+  seq_name := pg_get_serial_sequence('public.folders', 'id');
+  if seq_name is not null then
+    execute format('grant usage, select on sequence %s to service_role', seq_name);
+  end if;
+end
+$;
