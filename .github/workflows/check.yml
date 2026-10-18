@@ -14,3 +14,4 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: node --check index.js
+      - run: node -e "const T=require('node-telegram-bot-api'); for (const m of ['copyMessage','copyMessages']) if (typeof T.prototype[m] !== 'function') throw new Error('missing Telegram API method: '+m); console.log('Telegram copy APIs available')"
