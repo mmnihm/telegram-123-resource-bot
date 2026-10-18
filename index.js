@@ -109,6 +109,21 @@ function stats(){
  const size=db.prepare("SELECT COALESCE(SUM(file_size),0) n FROM files").get().n;
  return "🛠 管理中心\n\n📦 取件批次："+batches+"\n📄 文件记录："+files+"\n💾 登记大小："+bytes(size)+"\n\n直接发送文件保存，发送完成后点击「完成保存并生成取件码」。";
 }
+async function handleChannelBinding(m){
+ const uid=String(m.from?.id||"");
+ if(!binding.has(uid))return false;
+ if(m.text?.trim()==="取消"){binding.delete(uid);await bot.sendMessage(m.chat.id,"已取消频道绑定。",{reply_markup:adminKb});return true;}
+ const origin=m.forward_from_chat||m.forward_origin?.chat;
+ if(!origin||!origin.id||origin.type!=="channel"){await bot.sendMessage(m.chat.id,"⚠️ 请转发一条来自目标私人频道的原始消息。文字、图片或视频消息都可以；发送「取消」退出。",{reply_markup:adminKb});return true;}
+ try{
+  const me=await bot.getMe();
+  const member=await bot.getChatMember(origin.id,me.id);
+  if(!["administrator","creator"].includes(member.status)){await bot.sendMessage(m.chat.id,"❌ 机器人还不是该频道管理员。请先把机器人添加到频道并设为管理员，再重新转发一条频道消息。",{reply_markup:adminKb});return true;}
+  setChannel(origin.id);binding.delete(uid);
+  await bot.sendMessage(m.chat.id,"✅ 存储频道绑定成功！\\n\\n频道："+(origin.title||"私人频道")+"\\n频道 ID："+origin.id+"\\n\\n现在可以直接把文件发给机器人了。",{reply_markup:adminKb});
+ }catch(e){await bot.sendMessage(m.chat.id,"❌ 无法验证频道权限："+String(e.message||"").slice(0,180)+"\\n请确认机器人已加入频道并设为管理员。",{reply_markup:adminKb});}
+ return true;
+}
 async function handleText(m){
  const t=m.text.trim(),admin=isAdmin(m);
  const sm=t.match(/^\/start(?:@\w+)?(?:\s+(\d{6}))?$/i);if(sm)return start(m,sm[1]);
@@ -125,7 +140,7 @@ async function handleText(m){
  if(admin)return bot.sendMessage(m.chat.id,"📤 请直接发送文件、图片或视频；发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
  return bot.sendMessage(m.chat.id,"请点击「🔑 查询取件码」，再发送 6 位数字。",{reply_markup:userKb});
 }
-bot.on("message",async m=>{try{if(m.chat.type!=="private")return;if(m.text)return await handleText(m);if(await saveFile(m))return;}catch(e){console.error("HANDLER ERROR",e.stack||e.message||e);try{await bot.sendMessage(m.chat.id,"⚠️ 操作失败，请稍后重试。");}catch(_){}}});
+bot.on("message",async m=>{try{if(m.chat.type!=="private")return;if(await handleChannelBinding(m))return;if(m.text)return await handleText(m);if(await saveFile(m))return;}catch(e){console.error("HANDLER ERROR",e.stack||e.message||e);try{await bot.sendMessage(m.chat.id,"⚠️ 操作失败，请稍后重试。");}catch(_){}}});
 bot.on("polling_error",e=>console.error("TELEGRAM POLLING ERROR",e?.message||e));
 const server=http.createServer((req,res)=>{if(req.url==="/health"||req.url==="/ready"){res.writeHead(200,{"content-type":"application/json; charset=utf-8"});return res.end(JSON.stringify({ok:true,service:"telegram-pickup-bot"}));}res.writeHead(404);res.end("Not found");});
 server.listen(PORT,"0.0.0.0",()=>console.log("Pickup bot ready; port="+PORT+"; channel="+(getChannel()||"not-bound")+"; db="+DB_FILE));
