@@ -70,3 +70,15 @@ npm start
 历史资源扫描只保存消息 ID、文件名、文件夹等索引，不下载历史文件；用户点击资源后，机器人通过 Telegram `copyMessage` 从原仓库直接复制给用户。
 
 > 注意：Telegram Bot API、部署平台和 123 云盘 WebDAV 各自可能存在文件大小、超时或网络限制。大文件支持需要根据实际部署环境继续优化。
+
+## Health checks
+
+- `/health`: process liveness endpoint for hosting-platform health checks.
+- `/ready`: returns HTTP 200 only after Telegram startup and a successful Supabase query; returns HTTP 503 while starting or when the database is unavailable.
+
+## Security notes
+
+- Keep `BOT_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, WebDAV credentials, and `TELEGRAM_SESSION` in hosting-platform environment variables/secrets. Never commit real values.
+- The bot uses the Supabase `service_role` key server-side. The schema restricts the bot's tables from `anon` and `authenticated`; do not expose the service-role key to a browser or frontend.
+- Review the SQL changes before applying them to a Supabase project shared with other applications. They are scoped to this bot's `resources`, `folders`, and `bot_settings` tables.
+- This repository currently does not include a `LICENSE` file; do not assume third-party reuse rights without resolving the license.
