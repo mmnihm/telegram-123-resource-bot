@@ -77,3 +77,19 @@ alter table public.resources
 
 create index if not exists resources_folder_id_idx
   on public.resources(folder_id);
+
+-- Security hardening:
+-- This bot accesses these tables only with SUPABASE_SERVICE_ROLE_KEY on the server.
+-- Keep the key private and do not add anon/authenticated policies for these tables.
+alter table public.resources enable row level security;
+alter table public.folders enable row level security;
+alter table public.bot_settings enable row level security;
+
+revoke all privileges on table public.resources, public.folders, public.bot_settings
+  from public, anon, authenticated;
+
+grant all privileges on table public.resources, public.folders, public.bot_settings
+  to service_role;
+
+grant usage, select on sequence public.resources_id_seq, public.folders_id_seq
+  to service_role;
