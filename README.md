@@ -82,3 +82,16 @@ npm start
 - The bot uses the Supabase `service_role` key server-side. The schema restricts the bot's tables from `anon` and `authenticated`; do not expose the service-role key to a browser or frontend.
 - Review the SQL changes before applying them to a Supabase project shared with other applications. They are scoped to this bot's `resources`, `folders`, and `bot_settings` tables.
 - This repository currently does not include a `LICENSE` file; do not assume third-party reuse rights without resolving the license.
+
+## Render 免费测试部署
+
+1. 打开 [Render](https://render.com/) 并使用 GitHub 登录。
+2. 在 Render Dashboard 选择 **New → Blueprint**，选择本仓库及 `deploy/render-free-test` 分支。
+3. Render 读取 `render.yaml` 后创建免费 Web Service。按页面提示填写所有标记为待填写的环境变量；不要把密钥写进仓库文件或聊天消息。
+4. 至少填写 `BOT_TOKEN`、`ADMIN_IDS`、`SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`、`DAV_URL`、`DAV_USERNAME`、`DAV_PASSWORD`。只有需要扫描历史频道时才填写 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION`。
+5. 部署完成后打开服务的 `/health` 地址，应该返回 JSON 的 `alive` 状态；`/ready` 用于检查 Telegram 与 Supabase 是否就绪。
+6. 先用独立测试机器人发送一个小文件，验证上传、取件码生成和取回，再考虑正式使用。
+
+**免费层限制：** Render 免费 Web Service 15 分钟没有入站请求后会休眠，唤醒可能需要约一分钟；本地文件系统不持久化。资源记录由 Supabase 保存，MTProto 会话应通过环境变量提供。该免费服务适合测试，不保证机器人全天在线。不要使用外部定时 ping 绕过平台休眠限制。
+
+**重要：** 如果 Supabase 数据库还被其他应用共用，不要未经核对就执行仓库里的权限 SQL。部署配置不会自动修改 Supabase 表权限。
