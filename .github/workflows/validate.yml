@@ -1,0 +1,20 @@
+name: Validate Node.js
+on:
+  push:
+    branches: [main, fix/security-health-dedup]
+  pull_request:
+    branches: [main]
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: |
+          node --check index.js
+          node --check history-library.js
