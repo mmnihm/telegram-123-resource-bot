@@ -3,7 +3,6 @@ require("dotenv").config();
 const fs=require("node:fs"), path=require("node:path"), http=require("node:http");
 const TelegramBot=require("node-telegram-bot-api");
 const Database=require("better-sqlite3");
-const {isValidPickupCode}=require("./pickup-code");
 const TOKEN=String(process.env.BOT_TOKEN||"").trim();
 
 const PORT=Number(process.env.PORT||10000);
@@ -51,7 +50,7 @@ function bytes(v){v=Number(v||0);if(v>=1073741824)return(v/1073741824).toFixed(2
 function welcome(m){return isAdmin(m)
 ?"🛠 取件码机器人管理中心\n\n📡 首次启动用户已自动设为管理员。\n📤 直接把文件、图片或视频发给我。\n📦 全部发送完成后点击「完成保存并生成取件码」。\n🔑 默认生成 6 位数字码，也可先设置自定义取件码。\n\n存储：Telegram 私密频道 + SQLite 索引。\n无需 Supabase、123 网盘或 WebDAV。"
 :"👋 欢迎使用取件码机器人\n\n点击「🔑 查询取件码」，发送 6 位数字或自定义取件码，机器人会发送对应批次的全部文件。";}
-async function start(m,c){await bot.sendMessage(m.chat.id,welcome(m),{reply_markup:kb(m)});if(c&&validCode(c))await deliver(m.chat.id,c);}
+async function start(m,c){await bot.sendMessage(m.chat.id,welcome(m),{reply_markup:kb(m)});if(c&&validCode(c))await deliver(m.chat.id,normalizePickupCode(c));}
 async function saveFile(m){
  if(!isAdmin(m)||m.chat.type!=="private")return false;
  const info=mediaInfo(m);if(!info)return false;
@@ -141,8 +140,8 @@ async function handleText(m){
  const t=m.text.trim(),admin=isAdmin(m);
  const sm=t.match(/^\/start(?:@\w+)?(?:\s+([A-Za-z0-9_-]{4,32}))?$/i);if(sm)return start(m,sm[1]);
  if(/^\/(?:help|usage)(?:@\w+)?$/i.test(t)||t==="📖 使用说明")return bot.sendMessage(m.chat.id,"📖 使用说明\n\n管理员：直接发送文件，可先点击「🧩 自定义本批取件码」设置取件码；完成后点击「📦 完成保存并生成取件码」。默认自动生成 6 位数字码。\n用户：点击「🔑 查询取件码」，再发送取件码。\n文件保存在 Telegram 私密频道，取件码索引保存在 SQLite。",{reply_markup:kb(m)});
- if(t==="🧩 自定义本批取件码"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");customizing.add(String(m.from.id));return bot.sendMessage(m.chat.id,"🧩 请发送你想使用的取件码：4–32 位，只能包含英文字母、数字、下划线和连字符。\n例如：MOVIE_2026\n发送「取消」可放弃设置。",{reply_markup:adminKb});}
- if(customizing.has(String(m.from.id))){if(t==="取消"){customizing.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消自定义取件码。",{reply_markup:adminKb});}if(!validCode(t))return bot.sendMessage(m.chat.id,"⚠️ 格式不正确。请输入 4–32 位英文、数字、下划线或连字符。");if(db.prepare("SELECT 1 FROM batches WHERE code=?").get(t))return bot.sendMessage(m.chat.id,"⚠️ 这个取件码已经使用，请换一个。");customCodes.set(String(m.from.id),t);customizing.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"✅ 本批自定义取件码已设置为："+t+"\n继续发送文件，完成后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});}
+ if(t==="🧩 自定义取件码"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");customCodeWaiting.add(String(m.from.id));return bot.sendMessage(m.chat.id,"🧩 请发送你想使用的取件码：4–32 位，只能包含英文字母、数字、下划线和连字符。\n例如：MOVIE_2026\n发送「取消」可放弃设置。",{reply_markup:adminKb});}
+ if(customCodeWaiting.has(String(m.from.id))){if(t==="取消"){customCodeWaiting.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消自定义取件码。",{reply_markup:adminKb});}const custom=normalizePickupCode(t);if(!isValidCustomCode(custom))return bot.sendMessage(m.chat.id,"⚠️ 格式不正确。请输入 4–32 位英文、数字、下划线或连字符。");if(db.prepare("SELECT 1 FROM batches WHERE code=?").get(custom))return bot.sendMessage(m.chat.id,"⚠️ 这个取件码已经使用，请换一个。");customCodes.set(String(m.from.id),custom);customCodeWaiting.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"✅ 本批自定义取件码已设置为："+custom+"\n继续发送文件，完成后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});}
  if(/^\/(?:admin|stats)(?:@\w+)?$/i.test(t)||t==="🛠 管理中心"||t==="📊 存储统计"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");return bot.sendMessage(m.chat.id,stats()+"\n\n📡 存储频道："+(getChannel()||"尚未绑定"),{reply_markup:adminKb});}
  if(/^\/done(?:@\w+)?$/i.test(t)||t==="📦 完成保存并生成取件码"||t==="完成保存并生成取件码"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");return finish(m);}
  const dm=t.match(/^\/delete(?:@\w+)?\s+([A-Za-z0-9_-]{4,32})$/i);
@@ -150,8 +149,8 @@ async function handleText(m){
  if(t==="📡 绑定/更换存储频道"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");binding.add(String(m.from.id));return bot.sendMessage(m.chat.id,"📡 频道绑定步骤\n\n1. 把机器人添加到目标私人频道并设为管理员，允许发布消息。\n2. 回到频道，选择一条频道消息并转发给我。\n3. 我会自动识别频道并检查机器人权限。\n\n发送「取消」可退出绑定。",{reply_markup:adminKb});}
  if(binding.has(String(m.from.id))){if(t==="取消"){binding.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消频道绑定。",{reply_markup:adminKb});}const origin=m.forward_from_chat||m.forward_origin?.chat;if(origin&&origin.id&&origin.type==="channel"){try{const me=await bot.getMe();const member=await bot.getChatMember(origin.id,me.id);if(!["administrator","creator"].includes(member.status))return bot.sendMessage(m.chat.id,"❌ 机器人还不是该频道管理员。请先把机器人添加到频道并设为管理员，再重新转发一条频道消息。",{reply_markup:adminKb});setChannel(origin.id);binding.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"✅ 存储频道绑定成功！\\n\\n频道："+(origin.title||"私人频道")+"\\n频道 ID："+origin.id+"\\n\\n现在可以直接把文件发给机器人了。",{reply_markup:adminKb});}catch(e){return bot.sendMessage(m.chat.id,"❌ 无法验证频道权限："+String(e.message||"").slice(0,180)+"\\n请确认机器人已加入频道并设为管理员。",{reply_markup:adminKb});}}return bot.sendMessage(m.chat.id,"⚠️ 请转发一条来自目标频道的原始消息，不要复制粘贴文字。",{reply_markup:adminKb});}
  if(t==="🔑 查询取件码"){waiting.add(String(m.from.id));return bot.sendMessage(m.chat.id,"🔑 请发送 6 位数字取件码或自定义取件码。发送「取消」可退出。");}
- if(waiting.has(String(m.from.id))){if(t==="取消"){waiting.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消查询。",{reply_markup:kb(m)});}if(validCode(t)){waiting.delete(String(m.from.id));return deliver(m.chat.id,t);}return bot.sendMessage(m.chat.id,"⚠️ 取件码格式不正确，请重新输入，或发送「取消」。");}
- if(validCode(t))return deliver(m.chat.id,t);
+ if(waiting.has(String(m.from.id))){if(t==="取消"){waiting.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消查询。",{reply_markup:kb(m)});}if(validCode(t)){waiting.delete(String(m.from.id));return deliver(m.chat.id,normalizePickupCode(t));}return bot.sendMessage(m.chat.id,"⚠️ 取件码格式不正确，请重新输入，或发送「取消」。");}
+ if(validCode(t))return deliver(m.chat.id,normalizePickupCode(t));
  if(admin)return bot.sendMessage(m.chat.id,"📤 请直接发送文件、图片或视频；发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
  return bot.sendMessage(m.chat.id,"请点击「🔑 查询取件码」，再发送 6 位数字。",{reply_markup:userKb});
 }
