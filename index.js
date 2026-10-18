@@ -5,7 +5,7 @@ const TelegramBot=require("node-telegram-bot-api");
 const Database=require("better-sqlite3");
 const TOKEN=String(process.env.BOT_TOKEN||"").trim();
 const ADMINS=new Set(String(process.env.ADMIN_IDS||"").split(",").map(x=>x.trim()).filter(Boolean));
-const CHANNEL=String(process.env.STORAGE_CHANNEL_ID||"").trim();
+
 const PORT=Number(process.env.PORT||10000);
 const DB_FILE=path.resolve(process.env.DATABASE_FILE||"./data/store.db");
 const USERNAME=String(process.env.BOT_USERNAME||"").replace(/^@/,"").trim();
@@ -21,8 +21,10 @@ db.exec("CREATE TABLE IF NOT EXISTS batches(code TEXT PRIMARY KEY,owner_id TEXT 
 "CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT NOT NULL,channel_message_id INTEGER NOT NULL,file_name TEXT NOT NULL DEFAULT 'Telegram 文件',file_size INTEGER NOT NULL DEFAULT 0,media_type TEXT NOT NULL DEFAULT 'file',FOREIGN KEY(code) REFERENCES batches(code));"+
 "CREATE INDEX IF NOT EXISTS idx_files_code ON files(code);");
 const bot=new TelegramBot(TOKEN,{polling:true});
-const pending=new Map(), waiting=new Set(), uploadQueues=new Map(), finalizing=new Set();
-const adminKb={keyboard:[[{text:"📦 完成保存并生成取件码"}],[{text:"🛠 管理中心"},{text:"📊 存储统计"}],[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
+const pending=new Map(), waiting=new Set(), uploadQueues=new Map(), finalizing=new Set(), binding=new Set();
+const getChannel=()=>String(db.prepare("SELECT value FROM settings WHERE key=?").get("storage_channel_id")?.value||"").trim();
+const setChannel=id=>db.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run("storage_channel_id",String(id));
+const adminKb={keyboard:[[{text:"📡 绑定/更换存储频道"}],[{text:"📦 完成保存并生成取件码"}],[{text:"🛠 管理中心"},{text:"📊 存储统计"}],[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
 const userKb={keyboard:[[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
 const isAdmin=m=>m?.from?.id!=null&&ADMINS.has(String(m.from.id));
 const kb=m=>isAdmin(m)?adminKb:userKb;
@@ -51,7 +53,7 @@ async function saveFile(m){
  const previous=uploadQueues.get(uid)||Promise.resolve();
  const task=previous.catch(()=>{}).then(async()=>{
   try{
-   const copied=await bot.copyMessage(CHANNEL,m.chat.id,m.message_id);
+   const channel=getChannel();\n   if(!channel)throw Error("尚未绑定存储频道，请先点击「📡 绑定/更换存储频道」");\n   const copied=await bot.copyMessage(channel,m.chat.id,m.message_id);
    if(!pending.has(uid))pending.set(uid,[]);
    pending.get(uid).push({mid:Number(copied.message_id),name:String(info.name).slice(0,250),size:info.size,type:info.type});
    await bot.sendMessage(m.chat.id,"✅ 已保存到私密频道\n\n📦 本批已接收："+pending.get(uid).length+" 个文件\n📄 当前文件："+info.name+"\n\n全部发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
@@ -87,7 +89,7 @@ async function finish(m){
 async function deliver(chatId,raw){
  const code=String(raw||"").trim();
  if(!validCode(code))return bot.sendMessage(chatId,"⚠️ 请输入 6 位数字取件码。",{reply_markup:userKb});
- const batch=db.prepare("SELECT code FROM batches WHERE code=?").get(code);
+ const channel=getChannel();\n if(!channel)return bot.sendMessage(chatId,"⚠️ 管理员尚未绑定存储频道，请稍后再试。",{reply_markup:userKb});\n const batch=db.prepare("SELECT code FROM batches WHERE code=?").get(code);
  if(!batch)return bot.sendMessage(chatId,"❌ 没有找到这个取件码，请检查是否输入正确。",{reply_markup:userKb});
  const files=db.prepare("SELECT channel_message_id FROM files WHERE code=? ORDER BY id").all(code);
  if(!files.length)return bot.sendMessage(chatId,"⚠️ 该取件码没有可用文件，请联系管理员。");
@@ -95,7 +97,7 @@ async function deliver(chatId,raw){
  try{
   for(let i=0;i<files.length;i+=100){
    const chunk=files.slice(i,i+100);
-   const sent=await bot.copyMessages(chatId,CHANNEL,chunk.map(x=>Number(x.channel_message_id)));
+   const sent=await bot.copyMessages(chatId,channel,chunk.map(x=>Number(x.channel_message_id)));
    if(!Array.isArray(sent)||sent.length!==chunk.length)throw Error("部分文件没有成功发送");
   }
   await bot.sendMessage(chatId,"✅ 取件完成\n\n🔑 取件码："+code+"\n📦 文件数量："+files.length,{reply_markup:userKb});
@@ -115,7 +117,7 @@ async function handleText(m){
  if(/^\/done(?:@\w+)?$/i.test(t)||t==="📦 完成保存并生成取件码"||t==="完成保存并生成取件码"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");return finish(m);}
  const dm=t.match(/^\/delete(?:@\w+)?\s+(\d{6})$/i);
  if(dm){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");db.prepare("DELETE FROM files WHERE code=?").run(dm[1]);const r=db.prepare("DELETE FROM batches WHERE code=?").run(dm[1]);return bot.sendMessage(m.chat.id,r.changes?"🗑 已删除取件码索引；私密频道原文件未删除。":"❌ 没有找到该取件码。",{reply_markup:adminKb});}
- if(t==="🔑 查询取件码"){waiting.add(String(m.from.id));return bot.sendMessage(m.chat.id,"🔑 请发送 6 位数字取件码。发送「取消」可退出。");}
+ if(binding.has(String(m.from.id))){if(t==="取消"){binding.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消频道绑定。",{reply_markup:adminKb});}const origin=m.forward_from_chat||m.forward_origin?.chat;if(origin&&origin.id&&origin.type==="channel"){try{const me=await bot.getMe();const member=await bot.getChatMember(origin.id,me.id);if(!["administrator","creator"].includes(member.status))return bot.sendMessage(m.chat.id,"❌ 机器人还不是该频道管理员。请先把机器人添加到频道并设为管理员，再重新转发一条频道消息。",{reply_markup:adminKb});setChannel(origin.id);binding.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"✅ 存储频道绑定成功！\\n\\n频道："+(origin.title||"私人频道")+"\\n频道 ID："+origin.id+"\\n\\n现在可以直接把文件发给机器人了。",{reply_markup:adminKb});}catch(e){return bot.sendMessage(m.chat.id,"❌ 无法验证频道权限："+String(e.message||"").slice(0,180)+"\\n请确认机器人已加入频道并设为管理员。",{reply_markup:adminKb});}}return bot.sendMessage(m.chat.id,"⚠️ 请转发一条来自目标频道的原始消息，不要复制粘贴文字。",{reply_markup:adminKb});}\n if(t==="🔑 查询取件码"){waiting.add(String(m.from.id));return bot.sendMessage(m.chat.id,"🔑 请发送 6 位数字取件码。发送「取消」可退出。");}
  if(waiting.has(String(m.from.id))){if(t==="取消"){waiting.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消查询。",{reply_markup:kb(m)});}if(validCode(t)){waiting.delete(String(m.from.id));return deliver(m.chat.id,t);}return bot.sendMessage(m.chat.id,"⚠️ 请发送 6 位数字，或发送「取消」。");}
  if(validCode(t))return deliver(m.chat.id,t);
  if(admin)return bot.sendMessage(m.chat.id,"📤 请直接发送文件、图片或视频；发送完后点击「📦 完成保存并生成取件码」。",{reply_markup:adminKb});
@@ -124,6 +126,6 @@ async function handleText(m){
 bot.on("message",async m=>{try{if(m.chat.type!=="private")return;if(m.text)return await handleText(m);if(await saveFile(m))return;}catch(e){console.error("HANDLER ERROR",e.stack||e.message||e);try{await bot.sendMessage(m.chat.id,"⚠️ 操作失败，请稍后重试。");}catch(_){}}});
 bot.on("polling_error",e=>console.error("TELEGRAM POLLING ERROR",e?.message||e));
 const server=http.createServer((req,res)=>{if(req.url==="/health"||req.url==="/ready"){res.writeHead(200,{"content-type":"application/json; charset=utf-8"});return res.end(JSON.stringify({ok:true,service:"telegram-pickup-bot"}));}res.writeHead(404);res.end("Not found");});
-server.listen(PORT,"0.0.0.0",()=>console.log("Pickup bot ready; port="+PORT+"; channel="+CHANNEL+"; db="+DB_FILE));
+server.listen(PORT,"0.0.0.0",()=>console.log("Pickup bot ready; port="+PORT+"; channel="+(getChannel()||"not-bound")+"; db="+DB_FILE));
 async function shutdown(){try{await bot.stopPolling();}catch(_){}try{db.close();}catch(_){}server.close(()=>process.exit(0));}
 process.on("SIGINT",shutdown);process.on("SIGTERM",shutdown);
