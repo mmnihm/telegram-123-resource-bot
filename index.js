@@ -16,11 +16,12 @@ fs.mkdirSync(path.dirname(DB_FILE),{recursive:true});
 const db=new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
+db.pragma("foreign_keys = ON");
 db.exec("CREATE TABLE IF NOT EXISTS batches(code TEXT PRIMARY KEY,owner_id TEXT NOT NULL,file_count INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT (datetime('now')));"+
 "CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT NOT NULL,channel_message_id INTEGER NOT NULL,file_name TEXT NOT NULL DEFAULT 'Telegram 文件',file_size INTEGER NOT NULL DEFAULT 0,media_type TEXT NOT NULL DEFAULT 'file',FOREIGN KEY(code) REFERENCES batches(code));"+
 "CREATE INDEX IF NOT EXISTS idx_files_code ON files(code);");
 const bot=new TelegramBot(TOKEN,{polling:true});
-const pending=new Map(), waiting=new Set(), uploadQueues=new Map();
+const pending=new Map(), waiting=new Set(), uploadQueues=new Map(), finalizing=new Set();
 const adminKb={keyboard:[[{text:"📦 完成保存并生成取件码"}],[{text:"🛠 管理中心"},{text:"📊 存储统计"}],[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
 const userKb={keyboard:[[{text:"🔑 查询取件码"},{text:"📖 使用说明"}]],resize_keyboard:true};
 const isAdmin=m=>m?.from?.id!=null&&ADMINS.has(String(m.from.id));
@@ -64,17 +65,24 @@ async function saveFile(m){
  return true;
 }
 async function finish(m){
- const uid=String(m.from.id),items=pending.get(uid)||[];
- if(!items.length)return bot.sendMessage(m.chat.id,"📭 当前没有待生成取件码的文件。",{reply_markup:adminKb});
- const code=newCode();
- const tx=db.transaction(()=>{
-  db.prepare("INSERT INTO batches(code,owner_id,file_count) VALUES(?,?,?)").run(code,uid,items.length);
-  const ins=db.prepare("INSERT INTO files(code,channel_message_id,file_name,file_size,media_type) VALUES(?,?,?,?,?)");
-  for(const x of items)ins.run(code,x.mid,x.name,x.size,x.type);
- });
- tx();pending.delete(uid);
- const link=USERNAME?"\n\n取件链接：https://t.me/"+USERNAME+"?start="+code:"";
- await bot.sendMessage(m.chat.id,"🎉 本批资源保存完成\n\n🔑 取件码："+code+"\n📦 文件数量："+items.length+"\n📏 合计大小："+bytes(items.reduce((n,x)=>n+x.size,0))+link+"\n\n复制取件码发给取件人即可。",{reply_markup:adminKb});
+ const uid=String(m.from.id);
+ if(finalizing.has(uid))return bot.sendMessage(m.chat.id,"⏳ 正在生成取件码，请稍候。");
+ finalizing.add(uid);
+ try{
+  const queue=uploadQueues.get(uid);
+  if(queue)await queue.catch(()=>{});
+  const items=pending.get(uid)||[];
+  if(!items.length)return bot.sendMessage(m.chat.id,"📭 当前没有待生成取件码的文件。",{reply_markup:adminKb});
+  const code=newCode();
+  const tx=db.transaction(()=>{
+   db.prepare("INSERT INTO batches(code,owner_id,file_count) VALUES(?,?,?)").run(code,uid,items.length);
+   const ins=db.prepare("INSERT INTO files(code,channel_message_id,file_name,file_size,media_type) VALUES(?,?,?,?,?)");
+   for(const x of items)ins.run(code,x.mid,x.name,x.size,x.type);
+  });
+  tx();pending.delete(uid);
+  const link=USERNAME?"\n\n取件链接：https://t.me/"+USERNAME+"?start="+code:"";
+  await bot.sendMessage(m.chat.id,"🎉 本批资源保存完成\n\n🔑 取件码："+code+"\n📦 文件数量："+items.length+"\n📏 合计大小："+bytes(items.reduce((n,x)=>n+x.size,0))+link+"\n\n复制取件码发给取件人即可。",{reply_markup:adminKb});
+ }finally{finalizing.delete(uid);}
 }
 async function deliver(chatId,raw){
  const code=String(raw||"").trim();
@@ -106,7 +114,7 @@ async function handleText(m){
  if(/^\/(?:admin|stats)(?:@\w+)?$/i.test(t)||t==="🛠 管理中心"||t==="📊 存储统计"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");return bot.sendMessage(m.chat.id,stats(),{reply_markup:adminKb});}
  if(/^\/done(?:@\w+)?$/i.test(t)||t==="📦 完成保存并生成取件码"||t==="完成保存并生成取件码"){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");return finish(m);}
  const dm=t.match(/^\/delete(?:@\w+)?\s+(\d{6})$/i);
- if(dm){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");const r=db.prepare("DELETE FROM batches WHERE code=?").run(dm[1]);db.prepare("DELETE FROM files WHERE code=?").run(dm[1]);return bot.sendMessage(m.chat.id,r.changes?"🗑 已删除取件码索引；私密频道原文件未删除。":"❌ 没有找到该取件码。",{reply_markup:adminKb});}
+ if(dm){if(!admin)return bot.sendMessage(m.chat.id,"⛔ 此功能仅限管理员。");db.prepare("DELETE FROM files WHERE code=?").run(dm[1]);const r=db.prepare("DELETE FROM batches WHERE code=?").run(dm[1]);return bot.sendMessage(m.chat.id,r.changes?"🗑 已删除取件码索引；私密频道原文件未删除。":"❌ 没有找到该取件码。",{reply_markup:adminKb});}
  if(t==="🔑 查询取件码"){waiting.add(String(m.from.id));return bot.sendMessage(m.chat.id,"🔑 请发送 6 位数字取件码。发送「取消」可退出。");}
  if(waiting.has(String(m.from.id))){if(t==="取消"){waiting.delete(String(m.from.id));return bot.sendMessage(m.chat.id,"已取消查询。",{reply_markup:kb(m)});}if(validCode(t)){waiting.delete(String(m.from.id));return deliver(m.chat.id,t);}return bot.sendMessage(m.chat.id,"⚠️ 请发送 6 位数字，或发送「取消」。");}
  if(validCode(t))return deliver(m.chat.id,t);
