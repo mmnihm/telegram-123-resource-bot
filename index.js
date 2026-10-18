@@ -50,7 +50,7 @@ function mediaInfo(m){
 function bytes(v){v=Number(v||0);if(v>=1073741824)return(v/1073741824).toFixed(2)+" GB";if(v>=1048576)return(v/1048576).toFixed(2)+" MB";if(v>=1024)return(v/1024).toFixed(1)+" KB";return v?v+" B":"未知";}
 function welcome(m){return isAdmin(m)
 ?"🛠 取件码机器人管理中心\n\n📡 首次启动用户已自动设为管理员。\n📤 直接把文件、图片或视频发给我。\n📦 全部发送完成后点击「完成保存并生成取件码」。\n🔑 默认生成 6 位数字码，也可先设置自定义取件码。\n\n存储：Telegram 私密频道 + SQLite 索引。\n无需 Supabase、123 网盘或 WebDAV。"
-:"👋 欢迎使用取件码机器人\n\n点击「🔑 查询取件码」，发送 6 位数字，机器人会发送对应批次的全部文件。";}
+:"👋 欢迎使用取件码机器人\n\n点击「🔑 查询取件码」，发送 6 位数字或自定义取件码，机器人会发送对应批次的全部文件。";}
 async function start(m,c){await bot.sendMessage(m.chat.id,welcome(m),{reply_markup:kb(m)});if(c&&validCode(c))await deliver(m.chat.id,c);}
 async function saveFile(m){
  if(!isAdmin(m)||m.chat.type!=="private")return false;
@@ -98,7 +98,7 @@ async function finish(m){
  }finally{finalizing.delete(uid);}
 }
 async function deliver(chatId,raw){
- const code=String(raw||"").trim();
+ const code=normalizePickupCode(raw);
  if(!validCode(code))return bot.sendMessage(chatId,"⚠️ 取件码格式不正确。请发送 6 位数字码或管理员设置的自定义码。",{reply_markup:userKb});
  const channel=getChannel();
  if(!channel)return bot.sendMessage(chatId,"⚠️ 管理员尚未绑定存储频道，请稍后再试。",{reply_markup:userKb});
