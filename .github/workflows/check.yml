@@ -1,0 +1,21 @@
+name: Check bot
+on:
+  push:
+    branches: ["rewrite/telegram-channel-pickup-bot"]
+  pull_request:
+    branches: ["main"]
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: node --check index.js
+      - run: node --check pickup-code.js
+      - run: npm test
+      - name: Verify Telegram copy APIs
+        run: |
+          node -e "const T=require('node-telegram-bot-api'); for (const m of ['copyMessage','copyMessages']) if (typeof T.prototype[m] !== 'function') throw new Error('missing Telegram API method: '+m); console.log('Telegram copy APIs available')"
