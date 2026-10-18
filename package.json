@@ -4,7 +4,8 @@
   "description": "Telegram private-channel file storage and six-digit pickup-code bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
