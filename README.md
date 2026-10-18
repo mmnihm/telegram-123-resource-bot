@@ -1,60 +1,44 @@
-# telegram-123-resource-bot
+# Telegram 私密频道取件码机器人
 
-Telegram 资源取件码机器人：**Telegram → 123 云盘 WebDAV → Supabase → 取件码取回**。
+这是一个精简的 Telegram 文件存储与取件码机器人：**文件保存在你自己的 Telegram 私密频道，SQLite 保存取件码与频道消息 ID**。不需要 Supabase、123 网盘、WebDAV 或 MTProto 历史扫描。
 
-## 已实现
+## 功能
 
-- 📤 用户发送文件后自动上传到 123 云盘 WebDAV
-- 🔑 自动生成 6 位唯一取件码
-- 🗄️ Supabase 保存取件码、文件名、云盘路径、大小、下载次数、状态
-- 📥 用户发送取件码后取回文件
-- 🛠 管理员统计、搜索、查看资源、删除资源
-- 👤 ADMIN_IDS 支持 Telegram 数字 ID 或 @username
-- 🔍 MTProto 扫描 Telegram 频道/群历史消息
-- 📂 根据文件名特征自动建立历史资源文件夹
-- 🔎 用户端资源目录、关键词搜索、内联按钮
-- 📄 点击搜索结果直接从 Telegram 原仓库复制原文件，不下载到服务器
+- 管理员直接向机器人发送文件、图片或视频。
+- 机器人将文件复制到指定的 Telegram 私密频道。
+- 管理员点击「完成保存并生成取件码」，生成 6 位数字取件码。
+- 用户输入取件码，机器人将该批次的全部文件发给用户。
+- 管理菜单、批次统计、删除取件码索引。
+- `/health` 和 `/ready` 健康检查。
 
-## 文件
+## 必需配置
 
-- `index.js`：机器人主程序
-- `package.json`：Node.js 依赖
-- `.env.example`：环境变量模板
-- `supabase/schema.sql`：数据库表结构
-- `history-library.js`：历史资源文件夹、搜索和原文件取件模块
+- `BOT_TOKEN`：从 @BotFather 获取。
+- `ADMIN_IDS`：管理员 Telegram 数字 ID，多个 ID 用英文逗号分隔。
+- `STORAGE_CHANNEL_ID`：私密频道 ID，通常以 `-100` 开头。
+- `BOT_USERNAME`：机器人用户名，不带 `@`，可选，用于生成取件链接。
+- `DATABASE_FILE`：SQLite 数据库文件路径，建议 `/data/store.db`。
 
-## Supabase
+## 配置步骤
 
-在 Supabase SQL Editor 执行 `supabase/schema.sql`。
+1. 创建一个 Telegram **私密频道**。
+2. 将机器人添加为频道管理员，授予发布消息权限。
+3. 获取频道 ID（通常以 `-100` 开头）。
+4. 在部署平台配置上面的环境变量。
+5. 将部署平台的持久化磁盘挂载到 `/data`，并设置 `DATABASE_FILE=/data/store.db`。
+6. 部署启动后，管理员向机器人发送一批文件，完成后点「📦 完成保存并生成取件码」。
 
-## 环境变量
+## 使用方式
 
-```text
-BOT_TOKEN=
-ADMIN_IDS=
+- 管理员：直接发送文件 → 等待保存成功 → 点「📦 完成保存并生成取件码」→ 将生成的 6 位数字发给用户。
+- 用户：点「🔑 查询取件码」并发送 6 位数字；也可以通过 `https://t.me/机器人用户名?start=123456` 打开。
+- 管理员命令：`/admin` 查看统计，`/done` 完成当前批次，`/delete 123456` 删除取件码索引（不会删除频道原文件）。
 
-SUPABASE_URL=
-SUPABASE_SERVICE_ROLE_KEY=
+## 数据持久化重要说明
 
-DAV_URL=
-DAV_USERNAME=
-DAV_PASSWORD=
-DAV_ROOT=/telegram-resource-bot
+实际文件保存在 Telegram 私密频道；取件码与频道消息 ID 保存在 SQLite。**必须给 `/data` 配置持久化磁盘/存储卷**，否则部署重建后 SQLite 文件可能丢失，旧取件码就无法查询。Telegram 频道里的原文件不会因此被删除。
 
-# MTProto 历史资源扫描（用户账号，不是机器人 Token）
-TELEGRAM_API_ID=
-TELEGRAM_API_HASH=
-TELEGRAM_SESSION=
-```
-
-## 管理命令
-
-```
-/admin
-/search 关键词
-/resource 取件码
-/delete 取件码
-```
+旧版 Supabase/WebDAV 资源不会自动迁移到新版本；本次重写后需要重新上传并生成新的取件码。请先在单独分支测试，不要直接覆盖正在运行的旧部署。
 
 ## 启动
 
@@ -62,36 +46,3 @@ TELEGRAM_SESSION=
 npm install
 npm start
 ```
-
-## 下一步
-
-先在 Supabase SQL Editor 执行最新版 `supabase/schema.sql`，再配置 MTProto 三项变量并点击「🛠 管理中心 → 🔍 扫描历史资源」。
-
-历史资源扫描只保存消息 ID、文件名、文件夹等索引，不下载历史文件；用户点击资源后，机器人通过 Telegram `copyMessage` 从原仓库直接复制给用户。
-
-> 注意：Telegram Bot API、部署平台和 123 云盘 WebDAV 各自可能存在文件大小、超时或网络限制。大文件支持需要根据实际部署环境继续优化。
-
-## Health checks
-
-- `/health`: process liveness endpoint for hosting-platform health checks.
-- `/ready`: returns HTTP 200 only after Telegram startup and a successful Supabase query; returns HTTP 503 while starting or when the database is unavailable.
-
-## Security notes
-
-- Keep `BOT_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, WebDAV credentials, and `TELEGRAM_SESSION` in hosting-platform environment variables/secrets. Never commit real values.
-- The bot uses the Supabase `service_role` key server-side. The schema restricts the bot's tables from `anon` and `authenticated`; do not expose the service-role key to a browser or frontend.
-- Review the SQL changes before applying them to a Supabase project shared with other applications. They are scoped to this bot's `resources`, `folders`, and `bot_settings` tables.
-- This repository currently does not include a `LICENSE` file; do not assume third-party reuse rights without resolving the license.
-
-## Render 免费测试部署
-
-1. 打开 [Render](https://render.com/) 并使用 GitHub 登录。
-2. 在 Render Dashboard 选择 **New → Blueprint**，选择本仓库及 `deploy/render-free-test` 分支。
-3. Render 读取 `render.yaml` 后创建免费 Web Service。按页面提示填写所有标记为待填写的环境变量；不要把密钥写进仓库文件或聊天消息。
-4. 至少填写 `BOT_TOKEN`、`ADMIN_IDS`、`SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`、`DAV_URL`、`DAV_USERNAME`、`DAV_PASSWORD`。只有需要扫描历史频道时才填写 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION`。
-5. 部署完成后打开服务的 `/health` 地址，应该返回 JSON 的 `alive` 状态；`/ready` 用于检查 Telegram 与 Supabase 是否就绪。
-6. 先用独立测试机器人发送一个小文件，验证上传、取件码生成和取回，再考虑正式使用。
-
-**免费层限制：** Render 免费 Web Service 15 分钟没有入站请求后会休眠，唤醒可能需要约一分钟；本地文件系统不持久化。资源记录由 Supabase 保存，MTProto 会话应通过环境变量提供。该免费服务适合测试，不保证机器人全天在线。不要使用外部定时 ping 绕过平台休眠限制。
-
-**重要：** 如果 Supabase 数据库还被其他应用共用，不要未经核对就执行仓库里的权限 SQL。部署配置不会自动修改 Supabase 表权限。
