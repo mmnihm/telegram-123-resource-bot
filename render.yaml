@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: telegram-123-resource-bot
+    name: telegram-pickup-code-bot
     runtime: node
     plan: free
     region: singapore
@@ -9,26 +9,14 @@ services:
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
-        value: 20.20.0
+        value: 22.23.3
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_IDS
         sync: false
-      - key: SUPABASE_URL
+      - key: STORAGE_CHANNEL_ID
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      - key: BOT_USERNAME
         sync: false
-      - key: DAV_URL
-        sync: false
-      - key: DAV_USERNAME
-        sync: false
-      - key: DAV_PASSWORD
-        sync: false
-      - key: DAV_ROOT
-        value: /telegram-resource-bot
-      - key: TELEGRAM_API_ID
-        sync: false
-      - key: TELEGRAM_API_HASH
-        sync: false
-      - key: TELEGRAM_SESSION
-        sync: false
+      - key: DATABASE_FILE
+        value: /data/store.db
